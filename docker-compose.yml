@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  micropython:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: 8.2.9
+        BOARD: ${BOARD}
+        PORT: ${PORT}
+    volumes:
+      - ./build:/root/build
+      - ./modules:/modules
+    environment:
+      DEBIAN_FRONTEND: noninteractive
