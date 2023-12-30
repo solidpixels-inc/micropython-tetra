@@ -24,33 +24,31 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_BITMAP_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_BITMAP_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_BITMAP_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_BITMAP_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "modules/displayio/displayio-shared-module/Bitmap.h"
 
-#include "py/obj.h"
-#include "shared-module/displayio/area.h"
+extern const mp_obj_type_t displayio_bitmap_type;
 
-typedef struct {
-    mp_obj_base_t base;
-    uint16_t width;
-    uint16_t height;
-    uint32_t *data;
-    uint16_t stride; // uint32_t's
-    uint8_t bits_per_value;
-    uint8_t x_shift;
-    size_t x_mask;
-    displayio_area_t dirty_area;
-    uint16_t bitmask;
-    bool read_only;
-    bool data_alloc; // did bitmap allocate data or someone else
-} displayio_bitmap_t;
+void common_hal_displayio_bitmap_construct(displayio_bitmap_t *self, uint32_t width,
+                                           uint32_t height, uint32_t bits_per_value);
+void common_hal_displayio_bitmap_construct_from_buffer(displayio_bitmap_t *self, uint32_t width,
+                                                       uint32_t height, uint32_t bits_per_value, uint32_t *data, bool read_only);
 
-void displayio_bitmap_finish_refresh(displayio_bitmap_t *self);
-displayio_area_t *displayio_bitmap_get_refresh_areas(displayio_bitmap_t *self, displayio_area_t *tail);
-void displayio_bitmap_set_dirty_area(displayio_bitmap_t *self, const displayio_area_t *area);
-void displayio_bitmap_write_pixel(displayio_bitmap_t *self, int16_t x, int16_t y, uint32_t value);
+void common_hal_displayio_bitmap_load_row(displayio_bitmap_t *self, uint16_t y, uint8_t *data,
+                                          uint16_t len);
+uint16_t common_hal_displayio_bitmap_get_height(displayio_bitmap_t *self);
+uint16_t common_hal_displayio_bitmap_get_width(displayio_bitmap_t *self);
+uint32_t common_hal_displayio_bitmap_get_bits_per_value(displayio_bitmap_t *self);
+void common_hal_displayio_bitmap_set_pixel(displayio_bitmap_t *bitmap, int16_t x, int16_t y, uint32_t value);
+void common_hal_displayio_bitmap_blit(displayio_bitmap_t *self, int16_t x, int16_t y, displayio_bitmap_t *source,
+                                      int16_t x1, int16_t y1, int16_t x2, int16_t y2,
+                                      uint32_t skip_index, bool skip_index_none);
+uint32_t common_hal_displayio_bitmap_get_pixel(displayio_bitmap_t *bitmap, int16_t x, int16_t y);
+void common_hal_displayio_bitmap_fill(displayio_bitmap_t *bitmap, uint32_t value);
+int common_hal_displayio_bitmap_get_buffer(displayio_bitmap_t *self, mp_buffer_info_t *bufinfo, mp_uint_t flags);
+void common_hal_displayio_bitmap_deinit(displayio_bitmap_t *self);
+bool common_hal_displayio_bitmap_deinited(displayio_bitmap_t *self);
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_BITMAP_H
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_BITMAP_H

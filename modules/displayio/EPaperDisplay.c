@@ -1,5 +1,5 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,509 +24,477 @@
  * THE SOFTWARE.
  */
 
-#include "shared-bindings/displayio/EPaperDisplay.h"
-
-#include "py/gc.h"
-#include "py/runtime.h"
-#include "shared/runtime/interrupt_char.h"
-#include "shared-bindings/displayio/ColorConverter.h"
-#include "shared-bindings/displayio/FourWire.h"
-#include "shared-bindings/displayio/I2CDisplay.h"
-#if CIRCUITPY_PARALLELDISPLAY
-#include "shared-bindings/paralleldisplay/ParallelBus.h"
-#endif
-#include "shared-bindings/microcontroller/Pin.h"
-#include "shared-bindings/time/__init__.h"
-#include "shared-module/displayio/__init__.h"
-#include "supervisor/shared/display.h"
-#include "supervisor/shared/tick.h"
-#include "supervisor/usb.h"
+#include "modules/displayio/EPaperDisplay.h"
 
 #include <stdint.h>
-#include <string.h>
 
-#define DELAY 0x80
+#include "shared/runtime/context_manager_helpers.h"
+#include "py/binary.h"
+#include "py/objproperty.h"
+#include "py/objtype.h"
+#include "py/runtime.h"
+#include "modules/displayio/Group.h"
+#include "modules/microcontroller/Pin.h"
+#include "modules/util.h"
+#include "modules/displayio/displayio-shared-module/__init__.h"
+#include "supervisor/shared/translate/translate.h"
 
-void common_hal_displayio_epaperdisplay_construct(displayio_epaperdisplay_obj_t *self,
-    mp_obj_t bus, const uint8_t *start_sequence, uint16_t start_sequence_len, mp_float_t start_up_time,
-    const uint8_t *stop_sequence, uint16_t stop_sequence_len,
-    uint16_t width, uint16_t height, uint16_t ram_width, uint16_t ram_height,
-    int16_t colstart, int16_t rowstart, uint16_t rotation,
-    uint16_t set_column_window_command, uint16_t set_row_window_command,
-    uint16_t set_current_column_command, uint16_t set_current_row_command,
-    uint16_t write_black_ram_command, bool black_bits_inverted,
-    uint16_t write_color_ram_command, bool color_bits_inverted, uint32_t highlight_color,
-    const uint8_t *refresh_sequence, uint16_t refresh_sequence_len, mp_float_t refresh_time,
-    const mcu_pin_obj_t *busy_pin, bool busy_state, mp_float_t seconds_per_frame,
-    bool chip_select, bool grayscale, bool acep, bool two_byte_sequence_length, bool address_little_endian) {
-    uint16_t color_depth = 1;
-    bool core_grayscale = true;
-    if (highlight_color != 0x000000) {
-        self->core.colorspace.tricolor = true;
-        self->core.colorspace.tricolor_hue = displayio_colorconverter_compute_hue(highlight_color);
-        self->core.colorspace.tricolor_luma = displayio_colorconverter_compute_luma(highlight_color);
-    } else {
-        self->core.colorspace.tricolor = false;
+//| class EPaperDisplay:
+//|     """Manage updating an epaper display over a display bus
+//|
+//|     This initializes an epaper display and connects it into CircuitPython. Unlike other
+//|     objects in CircuitPython, EPaperDisplay objects live until `displayio.release_displays()`
+//|     is called. This is done so that CircuitPython can use the display itself.
+//|
+//|     Most people should not use this class directly. Use a specific display driver instead that will
+//|     contain the startup and shutdown sequences at minimum."""
+//|
+//|     def __init__(
+//|         self,
+//|         display_bus: _DisplayBus,
+//|         start_sequence: ReadableBuffer,
+//|         stop_sequence: ReadableBuffer,
+//|         *,
+//|         width: int,
+//|         height: int,
+//|         ram_width: int,
+//|         ram_height: int,
+//|         colstart: int = 0,
+//|         rowstart: int = 0,
+//|         rotation: int = 0,
+//|         set_column_window_command: Optional[int] = None,
+//|         set_row_window_command: Optional[int] = None,
+//|         set_current_column_command: Optional[int] = None,
+//|         set_current_row_command: Optional[int] = None,
+//|         write_black_ram_command: int,
+//|         black_bits_inverted: bool = False,
+//|         write_color_ram_command: Optional[int] = None,
+//|         color_bits_inverted: bool = False,
+//|         highlight_color: int = 0x000000,
+//|         refresh_display_command: Union[int, circuitpython_typing.ReadableBuffer],
+//|         refresh_time: float = 40,
+//|         busy_pin: Optional[microcontroller.Pin] = None,
+//|         busy_state: bool = True,
+//|         seconds_per_frame: float = 180,
+//|         always_toggle_chip_select: bool = False,
+//|         grayscale: bool = False,
+//|         advanced_color_epaper: bool = False,
+//|         two_byte_sequence_length: bool = False,
+//|         start_up_time: float = 0,
+//|         address_little_endian: bool = False
+//|     ) -> None:
+//|         """Create a EPaperDisplay object on the given display bus (`displayio.FourWire` or `paralleldisplay.ParallelBus`).
+//|
+//|         The ``start_sequence`` and ``stop_sequence`` are bitpacked to minimize the ram impact. Every
+//|         command begins with a command byte followed by a byte to determine the parameter count and
+//|         delay. When the top bit of the second byte is 1 (0x80), a delay will occur after the command
+//|         parameters are sent. The remaining 7 bits are the parameter count excluding any delay
+//|         byte. The bytes following are the parameters. When the delay bit is set, a single byte after
+//|         the parameters specifies the delay duration in milliseconds. The value 0xff will lead to an
+//|         extra long 500 ms delay instead of 255 ms. The next byte will begin a new command definition.
+//|
+//|         :param display_bus: The bus that the display is connected to
+//|         :type _DisplayBus: displayio.FourWire or paralleldisplay.ParallelBus
+//|         :param ~circuitpython_typing.ReadableBuffer start_sequence: Byte-packed command sequence.
+//|         :param ~circuitpython_typing.ReadableBuffer stop_sequence: Byte-packed command sequence.
+//|         :param int width: Width in pixels
+//|         :param int height: Height in pixels
+//|         :param int ram_width: RAM width in pixels
+//|         :param int ram_height: RAM height in pixels
+//|         :param int colstart: The index if the first visible column
+//|         :param int rowstart: The index if the first visible row
+//|         :param int rotation: The rotation of the display in degrees clockwise. Must be in 90 degree increments (0, 90, 180, 270)
+//|         :param int set_column_window_command: Command used to set the start and end columns to update
+//|         :param int set_row_window_command: Command used so set the start and end rows to update
+//|         :param int set_current_column_command: Command used to set the current column location
+//|         :param int set_current_row_command: Command used to set the current row location
+//|         :param int write_black_ram_command: Command used to write pixels values into the update region
+//|         :param bool black_bits_inverted: True if 0 bits are used to show black pixels. Otherwise, 1 means to show black.
+//|         :param int write_color_ram_command: Command used to write pixels values into the update region
+//|         :param bool color_bits_inverted: True if 0 bits are used to show the color. Otherwise, 1 means to show color.
+//|         :param int highlight_color: RGB888 of source color to highlight with third ePaper color.
+//|         :param int refresh_display_command: Command used to start a display refresh. Single int or byte-packed command sequence
+//|         :param float refresh_time: Time it takes to refresh the display before the stop_sequence should be sent. Ignored when busy_pin is provided.
+//|         :param microcontroller.Pin busy_pin: Pin used to signify the display is busy
+//|         :param bool busy_state: State of the busy pin when the display is busy
+//|         :param float seconds_per_frame: Minimum number of seconds between screen refreshes
+//|         :param bool always_toggle_chip_select: When True, chip select is toggled every byte
+//|         :param bool grayscale: When true, the color ram is the low bit of 2-bit grayscale
+//|         :param bool advanced_color_epaper: When true, the display is a 7-color advanced color epaper (ACeP)
+//|         :param bool two_byte_sequence_length: When true, use two bytes to define sequence length
+//|         :param float start_up_time: Time to wait after reset before sending commands
+//|         :param bool address_little_endian: Send the least significant byte (not bit) of multi-byte addresses first. Ignored when ram is addressed with one byte
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_epaperdisplay_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args)
+{
+    enum
+    {
+        ARG_display_bus,
+        ARG_start_sequence,
+        ARG_stop_sequence,
+        ARG_width,
+        ARG_height,
+        ARG_ram_width,
+        ARG_ram_height,
+        ARG_colstart,
+        ARG_rowstart,
+        ARG_rotation,
+        ARG_set_column_window_command,
+        ARG_set_row_window_command,
+        ARG_set_current_column_command,
+        ARG_set_current_row_command,
+        ARG_write_black_ram_command,
+        ARG_black_bits_inverted,
+        ARG_write_color_ram_command,
+        ARG_color_bits_inverted,
+        ARG_highlight_color,
+        ARG_refresh_display_command,
+        ARG_refresh_time,
+        ARG_busy_pin,
+        ARG_busy_state,
+        ARG_seconds_per_frame,
+        ARG_always_toggle_chip_select,
+        ARG_grayscale,
+        ARG_advanced_color_epaper,
+        ARG_two_byte_sequence_length,
+        ARG_start_up_time,
+        ARG_address_little_endian
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_display_bus, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {MP_QSTR_start_sequence, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {MP_QSTR_stop_sequence, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {
+            MP_QSTR_width,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {
+            MP_QSTR_height,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {
+            MP_QSTR_ram_width,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {
+            MP_QSTR_ram_height,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {MP_QSTR_colstart, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_rowstart, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_rotation, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_set_column_window_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = NO_COMMAND}},
+        {MP_QSTR_set_row_window_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = NO_COMMAND}},
+        {MP_QSTR_set_current_column_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = NO_COMMAND}},
+        {MP_QSTR_set_current_row_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = NO_COMMAND}},
+        {MP_QSTR_write_black_ram_command, MP_ARG_INT | MP_ARG_REQUIRED},
+        {MP_QSTR_black_bits_inverted, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_write_color_ram_command, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+        {MP_QSTR_color_bits_inverted, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_highlight_color, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0x000000}},
+        {MP_QSTR_refresh_display_command, MP_ARG_OBJ | MP_ARG_REQUIRED},
+        {MP_QSTR_refresh_time, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NEW_SMALL_INT(40)}},
+        {MP_QSTR_busy_pin, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+        {MP_QSTR_busy_state, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+        {MP_QSTR_seconds_per_frame, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NEW_SMALL_INT(180)}},
+        {MP_QSTR_always_toggle_chip_select, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_grayscale, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_advanced_color_epaper, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_two_byte_sequence_length, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_start_up_time, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NEW_SMALL_INT(0)}},
+        {MP_QSTR_address_little_endian, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, all_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    mp_obj_t display_bus = args[ARG_display_bus].u_obj;
+
+    mp_buffer_info_t start_bufinfo;
+    mp_get_buffer_raise(args[ARG_start_sequence].u_obj, &start_bufinfo, MP_BUFFER_READ);
+    mp_buffer_info_t stop_bufinfo;
+    mp_get_buffer_raise(args[ARG_stop_sequence].u_obj, &stop_bufinfo, MP_BUFFER_READ);
+
+    const mcu_pin_obj_t *busy_pin = validate_obj_is_free_pin_or_none(args[ARG_busy_pin].u_obj, MP_QSTR_busy_pin);
+
+    mp_int_t rotation = args[ARG_rotation].u_int;
+    if (rotation % 90 != 0)
+    {
+        mp_raise_ValueError(translate("Display rotation must be in 90 degree increments"));
     }
-    self->acep = acep;
-    self->core.colorspace.sevencolor = acep;
-    if (acep) {
-        color_depth = 4; // bits. 7 colors + clean
-        grayscale = false;
-        core_grayscale = false;
+
+    primary_display_t *disp = allocate_display_or_raise();
+    displayio_epaperdisplay_obj_t *self = &disp->epaper_display;
+
+    mp_float_t refresh_time = mp_obj_get_float(args[ARG_refresh_time].u_obj);
+    mp_float_t seconds_per_frame = mp_obj_get_float(args[ARG_seconds_per_frame].u_obj);
+    mp_float_t start_up_time = mp_obj_get_float(args[ARG_start_up_time].u_obj);
+
+    mp_int_t write_color_ram_command = NO_COMMAND;
+    mp_int_t highlight_color = args[ARG_highlight_color].u_int;
+    if (args[ARG_write_color_ram_command].u_obj != mp_const_none)
+    {
+        write_color_ram_command = mp_obj_get_int(args[ARG_write_color_ram_command].u_obj);
     }
 
-    displayio_display_core_construct(&self->core, bus, width, height, ram_width, ram_height,
-        colstart, rowstart, rotation, color_depth, core_grayscale, true, 1, true, true,
-        set_column_window_command, set_row_window_command, set_current_column_command, set_current_row_command,
-        false /* data_as_commands */, chip_select,
-        false /* SH1107_addressing */, address_little_endian);
+    bool two_byte_sequence_length = args[ARG_two_byte_sequence_length].u_bool;
 
-    self->write_black_ram_command = write_black_ram_command;
-    self->black_bits_inverted = black_bits_inverted;
-    self->write_color_ram_command = write_color_ram_command;
-    self->color_bits_inverted = color_bits_inverted;
-    self->refresh_time = refresh_time * 1000;
-    self->busy_state = busy_state;
-    self->refreshing = false;
-    self->milliseconds_per_frame = seconds_per_frame * 1000;
-    self->chip_select = chip_select ? CHIP_SELECT_TOGGLE_EVERY_BYTE : CHIP_SELECT_UNTOUCHED;
-    self->grayscale = grayscale;
-
-    self->start_sequence = start_sequence;
-    self->start_sequence_len = start_sequence_len;
-    self->start_up_time_ms = start_up_time * 1000;
-    self->stop_sequence = stop_sequence;
-    self->stop_sequence_len = stop_sequence_len;
-    self->refresh_sequence = refresh_sequence;
-    self->refresh_sequence_len = refresh_sequence_len;
-
-    self->busy.base.type = &mp_type_NoneType;
-    self->two_byte_sequence_length = two_byte_sequence_length;
-    if (busy_pin != NULL) {
-        self->busy.base.type = &digitalio_digitalinout_type;
-        common_hal_digitalio_digitalinout_construct(&self->busy, busy_pin);
-        common_hal_never_reset_pin(busy_pin);
+    mp_obj_t refresh_obj = args[ARG_refresh_display_command].u_obj;
+    const uint8_t *refresh_buf;
+    mp_buffer_info_t refresh_bufinfo;
+    size_t refresh_buf_len = 0;
+    mp_int_t refresh_command;
+    if (mp_obj_get_int_maybe(refresh_obj, &refresh_command))
+    {
+        uint8_t *command_buf = m_malloc(3, true);
+        command_buf[0] = refresh_command;
+        command_buf[1] = 0;
+        command_buf[2] = 0;
+        refresh_buf = command_buf;
+        refresh_buf_len = two_byte_sequence_length ? 3 : 2;
+    }
+    else if (mp_get_buffer(refresh_obj, &refresh_bufinfo, MP_BUFFER_READ))
+    {
+        refresh_buf = refresh_bufinfo.buf;
+        refresh_buf_len = refresh_bufinfo.len;
+    }
+    else
+    {
+        mp_raise_ValueError_varg(translate("Invalid %q"), MP_QSTR_refresh_display_command);
     }
 
-    // Clear the color memory if it isn't in use.
-    if (highlight_color == 0x00 && write_color_ram_command != NO_COMMAND) {
-        // TODO: Clear
-    }
+    self->base.type = &displayio_epaperdisplay_type;
+    common_hal_displayio_epaperdisplay_construct(
+        self,
+        display_bus,
+        start_bufinfo.buf, start_bufinfo.len, start_up_time, stop_bufinfo.buf, stop_bufinfo.len,
+        args[ARG_width].u_int, args[ARG_height].u_int, args[ARG_ram_width].u_int, args[ARG_ram_height].u_int,
+        args[ARG_colstart].u_int, args[ARG_rowstart].u_int, rotation,
+        args[ARG_set_column_window_command].u_int, args[ARG_set_row_window_command].u_int,
+        args[ARG_set_current_column_command].u_int, args[ARG_set_current_row_command].u_int,
+        args[ARG_write_black_ram_command].u_int, args[ARG_black_bits_inverted].u_bool, write_color_ram_command,
+        args[ARG_color_bits_inverted].u_bool, highlight_color, refresh_buf, refresh_buf_len, refresh_time,
+        busy_pin, args[ARG_busy_state].u_bool, seconds_per_frame,
+        args[ARG_always_toggle_chip_select].u_bool, args[ARG_grayscale].u_bool, args[ARG_advanced_color_epaper].u_bool,
+        two_byte_sequence_length, args[ARG_address_little_endian].u_bool);
 
-    // Set the group after initialization otherwise we may send pixels while we delay in
-    // initialization.
-    common_hal_displayio_epaperdisplay_show(self, &circuitpython_splash);
+    return self;
 }
 
-bool common_hal_displayio_epaperdisplay_show(displayio_epaperdisplay_obj_t *self, displayio_group_t *root_group) {
-    if (root_group == NULL) {
-        root_group = &circuitpython_splash;
-    }
-    return displayio_display_core_set_root_group(&self->core, root_group);
+// Helper to ensure we have the native super class instead of a subclass.
+static displayio_epaperdisplay_obj_t *native_display(mp_obj_t display_obj)
+{
+    mp_obj_t native_display = mp_obj_cast_to_native_base(display_obj, &displayio_epaperdisplay_type);
+    mp_obj_assert_native_inited(native_display);
+    return MP_OBJ_TO_PTR(native_display);
 }
 
-bool common_hal_displayio_epaperdisplay_set_root_group(displayio_epaperdisplay_obj_t *self, displayio_group_t *root_group) {
-    return displayio_display_core_set_root_group(&self->core, root_group);
+//|     def show(self, group: Group) -> None:
+//|         """
+//|         .. note:: `show()` is deprecated and will be removed in CircuitPython 9.0.0.
+//|           Use ``.root_group = group`` instead.
+//|
+//|         Switches to displaying the given group of layers. When group is None, the default
+//|         CircuitPython terminal will be shown.
+//|
+//|         :param Group group: The group to show."""
+//|         ...
+STATIC mp_obj_t displayio_epaperdisplay_obj_show(mp_obj_t self_in, mp_obj_t group_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    displayio_group_t *group = NULL;
+    if (group_in != mp_const_none)
+    {
+        group = MP_OBJ_TO_PTR(native_group(group_in));
+    }
+
+    bool ok = common_hal_displayio_epaperdisplay_show(self, group);
+    if (!ok)
+    {
+        mp_raise_ValueError(translate("Group already used"));
+    }
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_epaperdisplay_show_obj, displayio_epaperdisplay_obj_show);
 
-STATIC const displayio_area_t *displayio_epaperdisplay_get_refresh_areas(displayio_epaperdisplay_obj_t *self) {
-    if (self->core.full_refresh) {
-        self->core.area.next = NULL;
-        return &self->core.area;
-    }
-    const displayio_area_t *first_area = NULL;
-    if (self->core.current_group != NULL) {
-        first_area = displayio_group_get_refresh_areas(self->core.current_group, NULL);
-    }
-    if (first_area != NULL && self->core.row_command == NO_COMMAND) {
-        // Do a full refresh if the display doesn't support partial updates.
-        self->core.area.next = NULL;
-        return &self->core.area;
-    }
-    return first_area;
+//|     def update_refresh_mode(
+//|         self, start_sequence: ReadableBuffer, seconds_per_frame: float = 180
+//|     ) -> None:
+//|         """Updates the ``start_sequence`` and ``seconds_per_frame`` parameters to enable
+//|         varying the refresh mode of the display."""
+STATIC mp_obj_t displayio_epaperdisplay_update_refresh_mode(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    enum
+    {
+        ARG_start_sequence,
+        ARG_seconds_per_frame
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_start_sequence, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {MP_QSTR_seconds_per_frame, MP_ARG_OBJ, {.u_obj = MP_OBJ_NEW_SMALL_INT(180)}},
+    };
+    displayio_epaperdisplay_obj_t *self = native_display(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    // Get parameters
+    mp_buffer_info_t start_sequence;
+    mp_get_buffer_raise(args[ARG_start_sequence].u_obj, &start_sequence, MP_BUFFER_READ);
+    float seconds_per_frame = mp_obj_get_float(args[ARG_seconds_per_frame].u_obj);
+
+    // Update parameters
+    displayio_epaperdisplay_change_refresh_mode_parameters(self, &start_sequence, seconds_per_frame);
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_KW(displayio_epaperdisplay_update_refresh_mode_obj, 1, displayio_epaperdisplay_update_refresh_mode);
 
-uint16_t common_hal_displayio_epaperdisplay_get_width(displayio_epaperdisplay_obj_t *self) {
-    return displayio_display_core_get_width(&self->core);
+//|     def refresh(self) -> None:
+//|         """Refreshes the display immediately or raises an exception if too soon. Use
+//|         ``time.sleep(display.time_to_refresh)`` to sleep until a refresh can occur."""
+//|         ...
+STATIC mp_obj_t displayio_epaperdisplay_obj_refresh(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    bool ok = common_hal_displayio_epaperdisplay_refresh(self);
+    if (!ok)
+    {
+        mp_raise_RuntimeError(translate("Refresh too soon"));
+    }
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_refresh_obj, displayio_epaperdisplay_obj_refresh);
 
-uint16_t common_hal_displayio_epaperdisplay_get_height(displayio_epaperdisplay_obj_t *self) {
-    return displayio_display_core_get_height(&self->core);
+//|     time_to_refresh: float
+//|     """Time, in fractional seconds, until the ePaper display can be refreshed."""
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_time_to_refresh(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return mp_obj_new_float(common_hal_displayio_epaperdisplay_get_time_to_refresh(self) / 1000.0);
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_time_to_refresh_obj, displayio_epaperdisplay_obj_get_time_to_refresh);
 
-STATIC void wait_for_busy(displayio_epaperdisplay_obj_t *self) {
-    if (self->busy.base.type == &mp_type_NoneType) {
-        return;
-    }
-    while (common_hal_digitalio_digitalinout_get_value(&self->busy) == self->busy_state) {
-        RUN_BACKGROUND_TASKS;
-    }
+MP_PROPERTY_GETTER(displayio_epaperdisplay_time_to_refresh_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_time_to_refresh_obj);
+
+//|     busy: bool
+//|     """True when the display is refreshing. This uses the ``busy_pin`` when available or the
+//|        ``refresh_time`` otherwise."""
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_busy(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return mp_obj_new_bool(common_hal_displayio_epaperdisplay_get_busy(self));
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_busy_obj, displayio_epaperdisplay_obj_get_busy);
 
-STATIC void send_command_sequence(displayio_epaperdisplay_obj_t *self,
-    bool should_wait_for_busy, const uint8_t *sequence, uint32_t sequence_len) {
-    uint32_t i = 0;
-    while (i < sequence_len) {
-        const uint8_t *cmd = sequence + i;
-        uint8_t data_size = *(cmd + 1);
-        bool delay = (data_size & DELAY) != 0;
-        const uint8_t *data = cmd + 2;
-        data_size &= ~DELAY;
-        if (self->two_byte_sequence_length) {
-            data_size = ((data_size & ~DELAY) << 8) + *(cmd + 2);
-            data = cmd + 3;
-        }
-        displayio_display_core_begin_transaction(&self->core);
-        self->core.send(self->core.bus, DISPLAY_COMMAND, self->chip_select, cmd, 1);
-        self->core.send(self->core.bus, DISPLAY_DATA, self->chip_select, data, data_size);
-        displayio_display_core_end_transaction(&self->core);
-        uint16_t delay_length_ms = 0;
-        if (delay) {
-            data_size++;
-            delay_length_ms = *(cmd + 1 + data_size);
-            if (delay_length_ms == 255) {
-                delay_length_ms = 500;
-            }
-        }
-        common_hal_time_delay_ms(delay_length_ms);
-        if (should_wait_for_busy) {
-            wait_for_busy(self);
-        }
-        i += 2 + data_size;
-        if (self->two_byte_sequence_length) {
-            i++;
-        }
-    }
+MP_PROPERTY_GETTER(displayio_epaperdisplay_busy_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_busy_obj);
+
+//|     width: int
+//|     """Gets the width of the display in pixels"""
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_width(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_epaperdisplay_get_width(self));
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_width_obj, displayio_epaperdisplay_obj_get_width);
 
-void displayio_epaperdisplay_change_refresh_mode_parameters(displayio_epaperdisplay_obj_t *self,
-    mp_buffer_info_t *start_sequence, float seconds_per_frame) {
-    self->start_sequence = (uint8_t *)start_sequence->buf;
-    self->start_sequence_len = start_sequence->len;
-    self->milliseconds_per_frame = seconds_per_frame * 1000;
+MP_PROPERTY_GETTER(displayio_epaperdisplay_width_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_width_obj);
+
+//|     height: int
+//|     """Gets the height of the display in pixels"""
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_height(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_epaperdisplay_get_height(self));
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_height_obj, displayio_epaperdisplay_obj_get_height);
 
-STATIC void displayio_epaperdisplay_start_refresh(displayio_epaperdisplay_obj_t *self) {
-    // run start sequence
-    self->core.bus_reset(self->core.bus);
+MP_PROPERTY_GETTER(displayio_epaperdisplay_height_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_height_obj);
 
-    common_hal_time_delay_ms(self->start_up_time_ms);
-
-    send_command_sequence(self, true, self->start_sequence, self->start_sequence_len);
-    displayio_display_core_start_refresh(&self->core);
+//|     rotation: int
+//|     """The rotation of the display as an int in degrees."""
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_rotation(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_epaperdisplay_get_rotation(self));
 }
-
-uint32_t common_hal_displayio_epaperdisplay_get_time_to_refresh(displayio_epaperdisplay_obj_t *self) {
-    if (self->core.last_refresh == 0) {
-        return 0;
-    }
-    // Refresh at seconds per frame rate.
-    uint32_t elapsed_time = supervisor_ticks_ms64() - self->core.last_refresh;
-    if (elapsed_time > self->milliseconds_per_frame) {
-        return 0;
-    }
-    return self->milliseconds_per_frame - elapsed_time;
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_rotation_obj, displayio_epaperdisplay_obj_get_rotation);
+STATIC mp_obj_t displayio_epaperdisplay_obj_set_rotation(mp_obj_t self_in, mp_obj_t value)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    common_hal_displayio_epaperdisplay_set_rotation(self, mp_obj_get_int(value));
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_epaperdisplay_set_rotation_obj, displayio_epaperdisplay_obj_set_rotation);
 
-STATIC void displayio_epaperdisplay_finish_refresh(displayio_epaperdisplay_obj_t *self) {
-    // Actually refresh the display now that all pixel RAM has been updated.
-    send_command_sequence(self, false, self->refresh_sequence, self->refresh_sequence_len);
+MP_PROPERTY_GETSET(displayio_epaperdisplay_rotation_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_rotation_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_set_rotation_obj);
 
-    supervisor_enable_tick();
-    self->refreshing = true;
-
-    displayio_display_core_finish_refresh(&self->core);
+//|     bus: _DisplayBus
+//|     """The bus being used by the display"""
+//|
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_bus(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return common_hal_displayio_epaperdisplay_get_bus(self);
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_bus_obj, displayio_epaperdisplay_obj_get_bus);
 
-mp_obj_t common_hal_displayio_epaperdisplay_get_bus(displayio_epaperdisplay_obj_t *self) {
-    return self->core.bus;
+MP_PROPERTY_GETTER(displayio_epaperdisplay_bus_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_bus_obj);
+
+//|     root_group: Group
+//|     """The root group on the epaper display.
+//|     If the root group is set to `displayio.CIRCUITPYTHON_TERMINAL`, the default CircuitPython terminal will be shown.
+//|     If the root group is set to ``None``, no output will be shown.
+//|     """
+//|
+STATIC mp_obj_t displayio_epaperdisplay_obj_get_root_group(mp_obj_t self_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    return common_hal_displayio_epaperdisplay_get_root_group(self);
 }
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_epaperdisplay_get_root_group_obj, displayio_epaperdisplay_obj_get_root_group);
 
-void common_hal_displayio_epaperdisplay_set_rotation(displayio_epaperdisplay_obj_t *self, int rotation) {
-    bool transposed = (self->core.rotation == 90 || self->core.rotation == 270);
-    bool will_transposed = (rotation == 90 || rotation == 270);
-    if (transposed != will_transposed) {
-        int tmp = self->core.width;
-        self->core.width = self->core.height;
-        self->core.height = tmp;
+STATIC mp_obj_t displayio_epaperdisplay_obj_set_root_group(mp_obj_t self_in, mp_obj_t group_in)
+{
+    displayio_epaperdisplay_obj_t *self = native_display(self_in);
+    displayio_group_t *group = NULL;
+    if (group_in != mp_const_none)
+    {
+        group = MP_OBJ_TO_PTR(native_group(group_in));
     }
-    displayio_display_core_set_rotation(&self->core, rotation);
-    if (self == &displays[0].epaper_display) {
-        supervisor_stop_terminal();
-        supervisor_start_terminal(self->core.width, self->core.height);
-    }
-    if (self->core.current_group != NULL) {
-        displayio_group_update_transform(self->core.current_group, &self->core.transform);
-    }
+
+    common_hal_displayio_epaperdisplay_set_root_group(self, group);
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_epaperdisplay_set_root_group_obj, displayio_epaperdisplay_obj_set_root_group);
 
-uint16_t common_hal_displayio_epaperdisplay_get_rotation(displayio_epaperdisplay_obj_t *self) {
-    return self->core.rotation;
-}
+MP_PROPERTY_GETSET(displayio_epaperdisplay_root_group_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_get_root_group_obj,
+                   (mp_obj_t)&displayio_epaperdisplay_set_root_group_obj);
 
-mp_obj_t common_hal_displayio_epaperdisplay_get_root_group(displayio_epaperdisplay_obj_t *self) {
-    if (self->core.current_group == NULL) {
-        return mp_const_none;
-    }
-    return self->core.current_group;
-}
+STATIC const mp_rom_map_elem_t displayio_epaperdisplay_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_show), MP_ROM_PTR(&displayio_epaperdisplay_show_obj)},
+    {MP_ROM_QSTR(MP_QSTR_update_refresh_mode), MP_ROM_PTR(&displayio_epaperdisplay_update_refresh_mode_obj)},
+    {MP_ROM_QSTR(MP_QSTR_refresh), MP_ROM_PTR(&displayio_epaperdisplay_refresh_obj)},
 
-STATIC bool displayio_epaperdisplay_refresh_area(displayio_epaperdisplay_obj_t *self, const displayio_area_t *area) {
-    uint16_t buffer_size = 128; // In uint32_ts
+    {MP_ROM_QSTR(MP_QSTR_width), MP_ROM_PTR(&displayio_epaperdisplay_width_obj)},
+    {MP_ROM_QSTR(MP_QSTR_height), MP_ROM_PTR(&displayio_epaperdisplay_height_obj)},
+    {MP_ROM_QSTR(MP_QSTR_rotation), MP_ROM_PTR(&displayio_epaperdisplay_rotation_obj)},
+    {MP_ROM_QSTR(MP_QSTR_bus), MP_ROM_PTR(&displayio_epaperdisplay_bus_obj)},
+    {MP_ROM_QSTR(MP_QSTR_busy), MP_ROM_PTR(&displayio_epaperdisplay_busy_obj)},
+    {MP_ROM_QSTR(MP_QSTR_time_to_refresh), MP_ROM_PTR(&displayio_epaperdisplay_time_to_refresh_obj)},
+    {MP_ROM_QSTR(MP_QSTR_root_group), MP_ROM_PTR(&displayio_epaperdisplay_root_group_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_epaperdisplay_locals_dict, displayio_epaperdisplay_locals_dict_table);
 
-    displayio_area_t clipped;
-    // Clip the area to the display by overlapping the areas. If there is no overlap then we're done.
-    if (!displayio_display_core_clip_area(&self->core, area, &clipped)) {
-        return true;
-    }
-    uint16_t subrectangles = 1;
-    uint16_t rows_per_buffer = displayio_area_height(&clipped);
-    uint8_t pixels_per_word = (sizeof(uint32_t) * 8) / self->core.colorspace.depth;
-    uint16_t pixels_per_buffer = displayio_area_size(&clipped);
-    if (displayio_area_size(&clipped) > buffer_size * pixels_per_word) {
-        rows_per_buffer = buffer_size * pixels_per_word / displayio_area_width(&clipped);
-        if (rows_per_buffer == 0) {
-            rows_per_buffer = 1;
-        }
-        subrectangles = displayio_area_height(&clipped) / rows_per_buffer;
-        if (displayio_area_height(&clipped) % rows_per_buffer != 0) {
-            subrectangles++;
-        }
-        pixels_per_buffer = rows_per_buffer * displayio_area_width(&clipped);
-        buffer_size = pixels_per_buffer / pixels_per_word;
-        if (pixels_per_buffer % pixels_per_word) {
-            buffer_size += 1;
-        }
-    }
-
-    // Allocated and shared as a uint32_t array so the compiler knows the
-    // alignment everywhere.
-    uint32_t buffer[buffer_size];
-    volatile uint32_t mask_length = (pixels_per_buffer / 32) + 1;
-    uint32_t mask[mask_length];
-
-    uint8_t passes = 1;
-    if (self->write_color_ram_command != NO_COMMAND) {
-        passes = 2;
-    }
-    for (uint8_t pass = 0; pass < passes; pass++) {
-        uint16_t remaining_rows = displayio_area_height(&clipped);
-
-        if (self->core.row_command != NO_COMMAND) {
-            displayio_display_core_set_region_to_update(&self->core, &clipped);
-        }
-
-        uint8_t write_command = self->write_black_ram_command;
-        if (pass == 1) {
-            write_command = self->write_color_ram_command;
-        }
-        displayio_display_core_begin_transaction(&self->core);
-        self->core.send(self->core.bus, DISPLAY_COMMAND, self->chip_select, &write_command, 1);
-        displayio_display_core_end_transaction(&self->core);
-
-        for (uint16_t j = 0; j < subrectangles; j++) {
-            displayio_area_t subrectangle = {
-                .x1 = clipped.x1,
-                .y1 = clipped.y1 + rows_per_buffer * j,
-                .x2 = clipped.x2,
-                .y2 = clipped.y1 + rows_per_buffer * (j + 1)
-            };
-            if (remaining_rows < rows_per_buffer) {
-                subrectangle.y2 = subrectangle.y1 + remaining_rows;
-            }
-            remaining_rows -= rows_per_buffer;
-
-
-            uint16_t subrectangle_size_bytes = displayio_area_size(&subrectangle) / (8 / self->core.colorspace.depth);
-
-            memset(mask, 0, mask_length * sizeof(mask[0]));
-            memset(buffer, 0, buffer_size * sizeof(buffer[0]));
-
-            if (!self->acep) {
-                self->core.colorspace.grayscale = true;
-                self->core.colorspace.grayscale_bit = 7;
-            }
-            if (pass == 1) {
-                if (self->grayscale) { // 4-color grayscale
-                    self->core.colorspace.grayscale_bit = 6;
-                    displayio_display_core_fill_area(&self->core, &subrectangle, mask, buffer);
-                } else if (self->core.colorspace.tricolor) {
-                    self->core.colorspace.grayscale = false;
-                    displayio_display_core_fill_area(&self->core, &subrectangle, mask, buffer);
-                } else if (self->core.colorspace.sevencolor) {
-                    displayio_display_core_fill_area(&self->core, &subrectangle, mask, buffer);
-                }
-            } else {
-                displayio_display_core_fill_area(&self->core, &subrectangle, mask, buffer);
-            }
-
-            // Invert it all.
-            if ((pass == 1 && self->color_bits_inverted) ||
-                (pass == 0 && self->black_bits_inverted)) {
-                for (uint16_t k = 0; k < buffer_size; k++) {
-                    buffer[k] = ~buffer[k];
-                }
-            }
-
-            if (!displayio_display_core_begin_transaction(&self->core)) {
-                // Can't acquire display bus; skip the rest of the data. Try next display.
-                return false;
-            }
-            self->core.send(self->core.bus, DISPLAY_DATA, self->chip_select, (uint8_t *)buffer, subrectangle_size_bytes);
-            displayio_display_core_end_transaction(&self->core);
-
-            // TODO(tannewt): Make refresh displays faster so we don't starve other
-            // background tasks.
-            #if CIRCUITPY_USB
-            usb_background();
-            #endif
-        }
-    }
-
-    return true;
-}
-
-STATIC bool _clean_area(displayio_epaperdisplay_obj_t *self) {
-    uint16_t width = displayio_display_core_get_width(&self->core);
-    uint16_t height = displayio_display_core_get_height(&self->core);
-
-    uint8_t buffer[width / 2];
-    memset(buffer, 0x77, width / 2);
-
-    uint8_t write_command = self->write_black_ram_command;
-    displayio_display_core_begin_transaction(&self->core);
-    self->core.send(self->core.bus, DISPLAY_COMMAND, self->chip_select, &write_command, 1);
-    displayio_display_core_end_transaction(&self->core);
-
-    for (uint16_t j = 0; j < height; j++) {
-        if (!displayio_display_core_begin_transaction(&self->core)) {
-            // Can't acquire display bus; skip the rest of the data. Try next display.
-            return false;
-        }
-        self->core.send(self->core.bus, DISPLAY_DATA, self->chip_select, buffer, width / 2);
-        displayio_display_core_end_transaction(&self->core);
-
-        // TODO(tannewt): Make refresh displays faster so we don't starve other
-        // background tasks.
-        #if CIRCUITPY_USB
-        usb_background();
-        #endif
-    }
-
-    return true;
-}
-
-bool common_hal_displayio_epaperdisplay_refresh(displayio_epaperdisplay_obj_t *self) {
-
-    if (self->refreshing && self->busy.base.type == &digitalio_digitalinout_type) {
-        if (common_hal_digitalio_digitalinout_get_value(&self->busy) != self->busy_state) {
-            supervisor_disable_tick();
-            self->refreshing = false;
-            // Run stop sequence but don't wait for busy because busy is set when sleeping.
-            send_command_sequence(self, false, self->stop_sequence, self->stop_sequence_len);
-        } else {
-            return false;
-        }
-    }
-    if (self->core.current_group == NULL) {
-        return true;
-    }
-    // Refresh at seconds per frame rate.
-    if (common_hal_displayio_epaperdisplay_get_time_to_refresh(self) > 0) {
-        return false;
-    }
-    if (!displayio_display_core_bus_free(&self->core)) {
-        // Can't acquire display bus; skip updating this display. Try next display.
-        return false;
-    }
-    const displayio_area_t *current_area = displayio_epaperdisplay_get_refresh_areas(self);
-    if (current_area == NULL) {
-        return true;
-    }
-    if (self->acep) {
-        displayio_epaperdisplay_start_refresh(self);
-        _clean_area(self);
-        displayio_epaperdisplay_finish_refresh(self);
-        while (self->refreshing && !mp_hal_is_interrupted()) {
-            RUN_BACKGROUND_TASKS;
-        }
-    }
-    if (mp_hal_is_interrupted()) {
-        return false;
-    }
-
-    displayio_epaperdisplay_start_refresh(self);
-    while (current_area != NULL) {
-        displayio_epaperdisplay_refresh_area(self, current_area);
-        current_area = current_area->next;
-    }
-    displayio_epaperdisplay_finish_refresh(self);
-    return true;
-}
-
-void displayio_epaperdisplay_background(displayio_epaperdisplay_obj_t *self) {
-    if (self->refreshing) {
-        bool refresh_done = false;
-        if (self->busy.base.type == &digitalio_digitalinout_type) {
-            bool busy = common_hal_digitalio_digitalinout_get_value(&self->busy);
-            refresh_done = busy != self->busy_state;
-        } else {
-            refresh_done = supervisor_ticks_ms64() - self->core.last_refresh > self->refresh_time;
-        }
-        if (refresh_done) {
-            supervisor_disable_tick();
-            self->refreshing = false;
-            // Run stop sequence but don't wait for busy because busy is set when sleeping.
-            send_command_sequence(self, false, self->stop_sequence, self->stop_sequence_len);
-        }
-    }
-}
-
-bool common_hal_displayio_epaperdisplay_get_busy(displayio_epaperdisplay_obj_t *self) {
-    displayio_epaperdisplay_background(self);
-    return self->refreshing;
-}
-
-void release_epaperdisplay(displayio_epaperdisplay_obj_t *self) {
-    if (self->refreshing) {
-        wait_for_busy(self);
-        supervisor_disable_tick();
-        self->refreshing = false;
-        // Run stop sequence but don't wait for busy because busy is set when sleeping.
-        send_command_sequence(self, false, self->stop_sequence, self->stop_sequence_len);
-    }
-
-    release_display_core(&self->core);
-    if (self->busy.base.type == &digitalio_digitalinout_type) {
-        common_hal_digitalio_digitalinout_deinit(&self->busy);
-    }
-}
-
-void displayio_epaperdisplay_collect_ptrs(displayio_epaperdisplay_obj_t *self) {
-    displayio_display_core_collect_ptrs(&self->core);
-    gc_collect_ptr((void *)self->start_sequence);
-    gc_collect_ptr((void *)self->stop_sequence);
-}
-
-size_t maybe_refresh_epaperdisplay(void) {
-    for (uint8_t i = 0; i < CIRCUITPY_DISPLAY_LIMIT; i++) {
-        if (displays[i].epaper_display.base.type != &displayio_epaperdisplay_type ||
-            displays[i].epaper_display.core.current_group != &circuitpython_splash) {
-            // Skip regular displays and those not showing the splash.
-            continue;
-        }
-        displayio_epaperdisplay_obj_t *display = &displays[i].epaper_display;
-        size_t time_to_refresh = common_hal_displayio_epaperdisplay_get_time_to_refresh(display);
-        if (time_to_refresh > 0) {
-            return time_to_refresh;
-        }
-        if (common_hal_displayio_epaperdisplay_refresh(display)) {
-            return 0;
-        }
-        // If we could refresh but it failed, then we want to retry.
-        return 1;
-    }
-    // Return 0 if no ePaper displays are available to pretend it was updated.
-    return 0;
-}
+const mp_obj_type_t displayio_epaperdisplay_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_EPaperDisplay,
+    .make_new = displayio_epaperdisplay_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_epaperdisplay_locals_dict,
+};

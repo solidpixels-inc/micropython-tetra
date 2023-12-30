@@ -24,38 +24,30 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_GROUP_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_GROUP_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_GROUP_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_GROUP_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "modules/displayio/displayio-shared-module/Group.h"
 
-#include "py/obj.h"
-#include "py/objlist.h"
-#include "shared-module/displayio/area.h"
-#include "shared-module/displayio/Palette.h"
+extern const mp_obj_type_t displayio_group_type;
 
-typedef struct {
-    mp_obj_base_t base;
-    mp_obj_list_t *members;
-    displayio_buffer_transform_t absolute_transform;
-    displayio_area_t dirty_area; // Catch all for changed area
-    int16_t x;
-    int16_t y;
-    uint16_t scale;
-    bool item_removed : 1;
-    bool in_group : 1;
-    bool hidden : 1;
-    bool hidden_by_parent : 1;
-    uint8_t padding : 4;
-} displayio_group_t;
+displayio_group_t *native_group(mp_obj_t group_obj);
 
-void displayio_group_construct(displayio_group_t *self, mp_obj_list_t *members, uint32_t scale, mp_int_t x, mp_int_t y);
-void displayio_group_set_hidden_by_parent(displayio_group_t *self, bool hidden);
-bool displayio_group_get_previous_area(displayio_group_t *group, displayio_area_t *area);
-bool displayio_group_fill_area(displayio_group_t *group, const _displayio_colorspace_t *colorspace, const displayio_area_t *area, uint32_t *mask, uint32_t *buffer);
-void displayio_group_update_transform(displayio_group_t *group, const displayio_buffer_transform_t *parent_transform);
-void displayio_group_finish_refresh(displayio_group_t *self);
-displayio_area_t *displayio_group_get_refresh_areas(displayio_group_t *self, displayio_area_t *tail);
+void common_hal_displayio_group_construct(displayio_group_t *self, uint32_t scale, mp_int_t x, mp_int_t y);
+uint32_t common_hal_displayio_group_get_scale(displayio_group_t *self);
+void common_hal_displayio_group_set_scale(displayio_group_t *self, uint32_t scale);
+bool common_hal_displayio_group_get_hidden(displayio_group_t *self);
+void common_hal_displayio_group_set_hidden(displayio_group_t *self, bool hidden);
+mp_int_t common_hal_displayio_group_get_x(displayio_group_t *self);
+void common_hal_displayio_group_set_x(displayio_group_t *self, mp_int_t x);
+mp_int_t common_hal_displayio_group_get_y(displayio_group_t *self);
+void common_hal_displayio_group_set_y(displayio_group_t *self, mp_int_t y);
+void common_hal_displayio_group_append(displayio_group_t *self, mp_obj_t layer);
+void common_hal_displayio_group_insert(displayio_group_t *self, size_t index, mp_obj_t layer);
+size_t common_hal_displayio_group_get_len(displayio_group_t *self);
+mp_obj_t common_hal_displayio_group_pop(displayio_group_t *self, size_t index);
+mp_int_t common_hal_displayio_group_index(displayio_group_t *self, mp_obj_t layer);
+mp_obj_t common_hal_displayio_group_get(displayio_group_t *self, size_t index);
+void common_hal_displayio_group_set(displayio_group_t *self, size_t index, mp_obj_t layer);
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_GROUP_H
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_GROUP_H

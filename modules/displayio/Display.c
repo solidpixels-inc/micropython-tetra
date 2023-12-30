@@ -1,5 +1,5 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,422 +24,578 @@
  * THE SOFTWARE.
  */
 
-#include "shared-bindings/displayio/Display.h"
-
-#include "py/runtime.h"
-#include "shared-bindings/displayio/FourWire.h"
-#include "shared-bindings/displayio/I2CDisplay.h"
-#if CIRCUITPY_PARALLELDISPLAY
-#include "shared-bindings/paralleldisplay/ParallelBus.h"
-#endif
-#include "shared-bindings/microcontroller/Pin.h"
-#include "shared-bindings/time/__init__.h"
-#include "shared-module/displayio/__init__.h"
-#include "shared-module/displayio/display_core.h"
-#include "supervisor/shared/display.h"
-#include "supervisor/shared/tick.h"
-#include "supervisor/usb.h"
+#include "modules/displayio/Display.h"
 
 #include <stdint.h>
-#include <string.h>
 
-#define DELAY 0x80
+#include "shared/runtime/context_manager_helpers.h"
+#include "py/binary.h"
+#include "py/objproperty.h"
+#include "py/objtype.h"
+#include "py/runtime.h"
+#include "modules/displayio/Group.h"
+#include "modules/microcontroller/Pin.h"
+#include "modules/util.h"
+#include "modules/displayio/displayio-shared-module/__init__.h"
+#include "supervisor/shared/translate/translate.h"
 
-void common_hal_displayio_display_construct(displayio_display_obj_t *self,
-    mp_obj_t bus, uint16_t width, uint16_t height, int16_t colstart, int16_t rowstart,
-    uint16_t rotation, uint16_t color_depth, bool grayscale, bool pixels_in_byte_share_row,
-    uint8_t bytes_per_cell, bool reverse_pixels_in_byte, bool reverse_bytes_in_word, uint8_t set_column_command,
-    uint8_t set_row_command, uint8_t write_ram_command,
-    uint8_t *init_sequence, uint16_t init_sequence_len, const mcu_pin_obj_t *backlight_pin,
-    uint16_t brightness_command, mp_float_t brightness,
-    bool single_byte_bounds, bool data_as_commands, bool auto_refresh, uint16_t native_frames_per_second,
-    bool backlight_on_high, bool SH1107_addressing, uint16_t backlight_pwm_frequency) {
+//| _DisplayBus = Union["FourWire", "paralleldisplay.ParallelBus", "I2CDisplay"]
+//| """:py:class:`FourWire`, :py:class:`paralleldisplay.ParallelBus` or :py:class:`I2CDisplay`"""
+//|
 
-    // Turn off auto-refresh as we init.
-    self->auto_refresh = false;
-    uint16_t ram_width = 0x100;
-    uint16_t ram_height = 0x100;
-    if (single_byte_bounds) {
-        ram_width = 0xff;
-        ram_height = 0xff;
+//| class Display:
+//|     """Manage updating a display over a display bus
+//|
+//|     This initializes a display and connects it into CircuitPython. Unlike other
+//|     objects in CircuitPython, Display objects live until `displayio.release_displays()`
+//|     is called. This is done so that CircuitPython can use the display itself.
+//|
+//|     Most people should not use this class directly. Use a specific display driver instead that will
+//|     contain the initialization sequence at minimum."""
+//|
+//|     def __init__(
+//|         self,
+//|         display_bus: _DisplayBus,
+//|         init_sequence: ReadableBuffer,
+//|         *,
+//|         width: int,
+//|         height: int,
+//|         colstart: int = 0,
+//|         rowstart: int = 0,
+//|         rotation: int = 0,
+//|         color_depth: int = 16,
+//|         grayscale: bool = False,
+//|         pixels_in_byte_share_row: bool = True,
+//|         bytes_per_cell: int = 1,
+//|         reverse_pixels_in_byte: bool = False,
+//|         set_column_command: int = 0x2A,
+//|         set_row_command: int = 0x2B,
+//|         write_ram_command: int = 0x2C,
+//|         backlight_pin: Optional[microcontroller.Pin] = None,
+//|         brightness_command: Optional[int] = None,
+//|         brightness: float = 1.0,
+//|         single_byte_bounds: bool = False,
+//|         data_as_commands: bool = False,
+//|         auto_refresh: bool = True,
+//|         native_frames_per_second: int = 60,
+//|         backlight_on_high: bool = True,
+//|         SH1107_addressing: bool = False
+//|     ) -> None:
+//|         r"""Create a Display object on the given display bus (`FourWire`, `ParallelBus` or `I2CDisplay`).
+//|
+//|         The ``init_sequence`` is bitpacked to minimize the ram impact. Every command begins with a
+//|         command byte followed by a byte to determine the parameter count and delay. When the top bit
+//|         of the second byte is 1 (0x80), a delay will occur after the command parameters are sent.
+//|         The remaining 7 bits are the parameter count excluding any delay byte. The bytes following
+//|         are the parameters. When the delay bit is set, a single byte after the parameters specifies
+//|         the delay duration in milliseconds. The value 0xff will lead to an extra long 500 ms delay
+//|         instead of 255 ms. The next byte will begin a new command definition.
+//|         Here is an example:
+//|
+//|         .. code-block:: python
+//|
+//|           init_sequence = (b"\xe1\x0f\x00\x0E\x14\x03\x11\x07\x31\xC1\x48\x08\x0F\x0C\x31\x36\x0F" # Set Gamma
+//|                            b"\x11\x80\x78"# Exit Sleep then delay 0x78 (120ms)
+//|                            b"\x29\x81\xaa\x78"# Display on then delay 0x78 (120ms)
+//|                           )
+//|            display = displayio.Display(display_bus, init_sequence, width=320, height=240)
+//|
+//|         The first command is 0xe1 with 15 (0xf) parameters following. The second is 0x11 with 0
+//|         parameters and a 120ms (0x78) delay. The third command is 0x29 with one parameter 0xaa and a
+//|         120ms delay (0x78). Multiple byte literals (b"") are merged together on load. The parens
+//|         are needed to allow byte literals on subsequent lines.
+//|
+//|         The initialization sequence should always leave the display memory access inline with the scan
+//|         of the display to minimize tearing artifacts.
+//|
+//|         :param display_bus: The bus that the display is connected to
+//|         :type _DisplayBus: FourWire, ParallelBus or I2CDisplay
+//|         :param ~circuitpython_typing.ReadableBuffer init_sequence: Byte-packed initialization sequence.
+//|         :param int width: Width in pixels
+//|         :param int height: Height in pixels
+//|         :param int colstart: The index if the first visible column
+//|         :param int rowstart: The index if the first visible row
+//|         :param int rotation: The rotation of the display in degrees clockwise. Must be in 90 degree increments (0, 90, 180, 270)
+//|         :param int color_depth: The number of bits of color per pixel transmitted. (Some displays
+//|             support 18 bit but 16 is easier to transmit. The last bit is extrapolated.)
+//|         :param bool grayscale: True if the display only shows a single color.
+//|         :param bool pixels_in_byte_share_row: True when pixels are less than a byte and a byte includes pixels from the same row of the display. When False, pixels share a column.
+//|         :param int bytes_per_cell: Number of bytes per addressable memory location when color_depth < 8. When greater than one, bytes share a row or column according to pixels_in_byte_share_row.
+//|         :param bool reverse_pixels_in_byte: Reverses the pixel order within each byte when color_depth < 8. Does not apply across multiple bytes even if there is more than one byte per cell (bytes_per_cell.)
+//|         :param bool reverse_bytes_in_word: Reverses the order of bytes within a word when color_depth == 16
+//|         :param int set_column_command: Command used to set the start and end columns to update
+//|         :param int set_row_command: Command used so set the start and end rows to update
+//|         :param int write_ram_command: Command used to write pixels values into the update region. Ignored if data_as_commands is set.
+//|         :param microcontroller.Pin backlight_pin: Pin connected to the display's backlight
+//|         :param int brightness_command: Command to set display brightness. Usually available in OLED controllers.
+//|         :param float brightness: Initial display brightness.
+//|         :param bool single_byte_bounds: Display column and row commands use single bytes
+//|         :param bool data_as_commands: Treat all init and boundary data as SPI commands. Certain displays require this.
+//|         :param bool auto_refresh: Automatically refresh the screen
+//|         :param int native_frames_per_second: Number of display refreshes per second that occur with the given init_sequence.
+//|         :param bool backlight_on_high: If True, pulling the backlight pin high turns the backlight on.
+//|         :param bool SH1107_addressing: Special quirk for SH1107, use upper/lower column set and page set
+//|         :param int set_vertical_scroll: This parameter is accepted but ignored for backwards compatibility. It will be removed in a future release.
+//|         :param int backlight_pwm_frequency: The frequency to use to drive the PWM for backlight brightness control. Default is 50000.
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_display_make_new(const mp_obj_type_t *type, size_t n_args,
+                                           size_t n_kw, const mp_obj_t *all_args)
+{
+    enum
+    {
+        ARG_display_bus,
+        ARG_init_sequence,
+        ARG_width,
+        ARG_height,
+        ARG_colstart,
+        ARG_rowstart,
+        ARG_rotation,
+        ARG_color_depth,
+        ARG_grayscale,
+        ARG_pixels_in_byte_share_row,
+        ARG_bytes_per_cell,
+        ARG_reverse_pixels_in_byte,
+        ARG_reverse_bytes_in_word,
+        ARG_set_column_command,
+        ARG_set_row_command,
+        ARG_write_ram_command,
+        ARG_set_vertical_scroll,
+        ARG_backlight_pin,
+        ARG_brightness_command,
+        ARG_brightness,
+        ARG_single_byte_bounds,
+        ARG_data_as_commands,
+        ARG_auto_refresh,
+        ARG_native_frames_per_second,
+        ARG_backlight_on_high,
+        ARG_SH1107_addressing,
+        ARG_backlight_pwm_frequency
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_display_bus, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {MP_QSTR_init_sequence, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {
+            MP_QSTR_width,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {
+            MP_QSTR_height,
+            MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED,
+        },
+        {MP_QSTR_colstart, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_rowstart, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_rotation, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0}},
+        {MP_QSTR_color_depth, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 16}},
+        {MP_QSTR_grayscale, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_pixels_in_byte_share_row, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+        {MP_QSTR_bytes_per_cell, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 1}},
+        {MP_QSTR_reverse_pixels_in_byte, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_reverse_bytes_in_word, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+        {MP_QSTR_set_column_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0x2a}},
+        {MP_QSTR_set_row_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0x2b}},
+        {MP_QSTR_write_ram_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0x2c}},
+        {MP_QSTR_set_vertical_scroll, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 0x0}},
+        {MP_QSTR_backlight_pin, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+        {MP_QSTR_brightness_command, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = NO_BRIGHTNESS_COMMAND}},
+        {MP_QSTR_brightness, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NEW_SMALL_INT(1)}},
+        {MP_QSTR_single_byte_bounds, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_data_as_commands, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_auto_refresh, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+        {MP_QSTR_native_frames_per_second, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 60}},
+        {MP_QSTR_backlight_on_high, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+        {MP_QSTR_SH1107_addressing, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_backlight_pwm_frequency, MP_ARG_INT | MP_ARG_KW_ONLY, {.u_int = 50000}}};
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, all_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    mp_obj_t display_bus = args[ARG_display_bus].u_obj;
+
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[ARG_init_sequence].u_obj, &bufinfo, MP_BUFFER_READ);
+
+    const mcu_pin_obj_t *backlight_pin =
+        validate_obj_is_free_pin_or_none(args[ARG_backlight_pin].u_obj, MP_QSTR_backlight_pin);
+
+    mp_float_t brightness = mp_obj_get_float(args[ARG_brightness].u_obj);
+
+    mp_int_t rotation = args[ARG_rotation].u_int;
+    if (rotation % 90 != 0)
+    {
+        mp_raise_ValueError(translate("Display rotation must be in 90 degree increments"));
     }
-    displayio_display_core_construct(&self->core, bus, width, height, ram_width, ram_height, colstart, rowstart, rotation,
-        color_depth, grayscale, pixels_in_byte_share_row, bytes_per_cell, reverse_pixels_in_byte, reverse_bytes_in_word,
-        set_column_command, set_row_command, NO_COMMAND, NO_COMMAND, data_as_commands, false /* always_toggle_chip_select */,
-        SH1107_addressing && color_depth == 1, false /*address_little_endian */);
 
-    self->write_ram_command = write_ram_command;
-    self->brightness_command = brightness_command;
-    self->first_manual_refresh = !auto_refresh;
-    self->backlight_on_high = backlight_on_high;
-
-    self->native_frames_per_second = native_frames_per_second;
-    self->native_ms_per_frame = 1000 / native_frames_per_second;
-
-    uint32_t i = 0;
-    while (i < init_sequence_len) {
-        uint8_t *cmd = init_sequence + i;
-        uint8_t data_size = *(cmd + 1);
-        bool delay = (data_size & DELAY) != 0;
-        data_size &= ~DELAY;
-        uint8_t *data = cmd + 2;
-        while (!displayio_display_core_begin_transaction(&self->core)) {
-            RUN_BACKGROUND_TASKS;
-        }
-        if (self->core.data_as_commands) {
-            uint8_t full_command[data_size + 1];
-            full_command[0] = cmd[0];
-            memcpy(full_command + 1, data, data_size);
-            self->core.send(self->core.bus, DISPLAY_COMMAND, CHIP_SELECT_TOGGLE_EVERY_BYTE, full_command, data_size + 1);
-        } else {
-            self->core.send(self->core.bus, DISPLAY_COMMAND, CHIP_SELECT_TOGGLE_EVERY_BYTE, cmd, 1);
-            self->core.send(self->core.bus, DISPLAY_DATA, CHIP_SELECT_UNTOUCHED, data, data_size);
-        }
-        displayio_display_core_end_transaction(&self->core);
-        uint16_t delay_length_ms = 10;
-        if (delay) {
-            data_size++;
-            delay_length_ms = *(cmd + 1 + data_size);
-            if (delay_length_ms == 255) {
-                delay_length_ms = 500;
-            }
-        }
-        common_hal_time_delay_ms(delay_length_ms);
-        i += 2 + data_size;
+    const bool sh1107_addressing = args[ARG_SH1107_addressing].u_bool;
+    const mp_int_t color_depth = args[ARG_color_depth].u_int;
+    if (sh1107_addressing && color_depth != 1)
+    {
+        mp_raise_ValueError_varg(translate("%q must be 1 when %q is True"), MP_QSTR_color_depth, MP_QSTR_SH1107_addressing);
     }
 
-    // Always set the backlight type in case we're reusing memory.
-    self->backlight_inout.base.type = &mp_type_NoneType;
-    if (backlight_pin != NULL && common_hal_mcu_pin_is_free(backlight_pin)) {
-        // Avoid PWM types and functions when the module isn't enabled
-        #if (CIRCUITPY_PWMIO)
-        pwmout_result_t result = common_hal_pwmio_pwmout_construct(&self->backlight_pwm, backlight_pin, 0, backlight_pwm_frequency, false);
-        if (result != PWMOUT_OK) {
-            self->backlight_inout.base.type = &digitalio_digitalinout_type;
-            common_hal_digitalio_digitalinout_construct(&self->backlight_inout, backlight_pin);
-            common_hal_never_reset_pin(backlight_pin);
-        } else {
-            self->backlight_pwm.base.type = &pwmio_pwmout_type;
-            common_hal_pwmio_pwmout_never_reset(&self->backlight_pwm);
-        }
-        #else
-        // Otherwise default to digital
-        self->backlight_inout.base.type = &digitalio_digitalinout_type;
-        common_hal_digitalio_digitalinout_construct(&self->backlight_inout, backlight_pin);
-        common_hal_never_reset_pin(backlight_pin);
-        #endif
-    }
+    primary_display_t *disp = allocate_display_or_raise();
+    displayio_display_obj_t *self = &disp->display;
 
-    common_hal_displayio_display_set_brightness(self, brightness);
+    self->base.type = &displayio_display_type;
+    common_hal_displayio_display_construct(
+        self,
+        display_bus, args[ARG_width].u_int, args[ARG_height].u_int, args[ARG_colstart].u_int, args[ARG_rowstart].u_int, rotation,
+        color_depth, args[ARG_grayscale].u_bool,
+        args[ARG_pixels_in_byte_share_row].u_bool,
+        args[ARG_bytes_per_cell].u_bool,
+        args[ARG_reverse_pixels_in_byte].u_bool,
+        args[ARG_reverse_bytes_in_word].u_bool,
+        args[ARG_set_column_command].u_int, args[ARG_set_row_command].u_int,
+        args[ARG_write_ram_command].u_int,
+        bufinfo.buf, bufinfo.len,
+        MP_OBJ_TO_PTR(backlight_pin),
+        args[ARG_brightness_command].u_int,
+        brightness,
+        args[ARG_single_byte_bounds].u_bool,
+        args[ARG_data_as_commands].u_bool,
+        args[ARG_auto_refresh].u_bool,
+        args[ARG_native_frames_per_second].u_int,
+        args[ARG_backlight_on_high].u_bool,
+        sh1107_addressing,
+        args[ARG_backlight_pwm_frequency].u_int);
 
-    // Set the group after initialization otherwise we may send pixels while we delay in
-    // initialization.
-    if (!circuitpython_splash.in_group) {
-        common_hal_displayio_display_set_root_group(self, &circuitpython_splash);
-    }
-    common_hal_displayio_display_set_auto_refresh(self, auto_refresh);
+    return self;
 }
 
-bool common_hal_displayio_display_show(displayio_display_obj_t *self, displayio_group_t *root_group) {
-    if (root_group == NULL) {
-        root_group = &circuitpython_splash;
-    }
-    return displayio_display_core_set_root_group(&self->core, root_group);
+// Helper to ensure we have the native super class instead of a subclass.
+static displayio_display_obj_t *native_display(mp_obj_t display_obj)
+{
+    mp_obj_t native_display = mp_obj_cast_to_native_base(display_obj, &displayio_display_type);
+    mp_obj_assert_native_inited(native_display);
+    return MP_OBJ_TO_PTR(native_display);
 }
 
-uint16_t common_hal_displayio_display_get_width(displayio_display_obj_t *self) {
-    return displayio_display_core_get_width(&self->core);
-}
-
-uint16_t common_hal_displayio_display_get_height(displayio_display_obj_t *self) {
-    return displayio_display_core_get_height(&self->core);
-}
-
-mp_float_t common_hal_displayio_display_get_brightness(displayio_display_obj_t *self) {
-    return self->current_brightness;
-}
-
-bool common_hal_displayio_display_set_brightness(displayio_display_obj_t *self, mp_float_t brightness) {
-    if (!self->backlight_on_high) {
-        brightness = 1.0 - brightness;
-    }
-    bool ok = false;
-
-    // Avoid PWM types and functions when the module isn't enabled
-    #if (CIRCUITPY_PWMIO)
-    bool ispwm = (self->backlight_pwm.base.type == &pwmio_pwmout_type) ? true : false;
-    #else
-    bool ispwm = false;
-    #endif
-
-    if (ispwm) {
-        #if (CIRCUITPY_PWMIO)
-        common_hal_pwmio_pwmout_set_duty_cycle(&self->backlight_pwm, (uint16_t)(0xffff * brightness));
-        ok = true;
-        #else
-        ok = false;
-        #endif
-    } else if (self->backlight_inout.base.type == &digitalio_digitalinout_type) {
-        common_hal_digitalio_digitalinout_set_value(&self->backlight_inout, brightness > 0.99);
-        ok = true;
-    } else if (self->brightness_command != NO_BRIGHTNESS_COMMAND) {
-        ok = displayio_display_core_begin_transaction(&self->core);
-        if (ok) {
-            if (self->core.data_as_commands) {
-                uint8_t set_brightness[2] = {self->brightness_command, (uint8_t)(0xff * brightness)};
-                self->core.send(self->core.bus, DISPLAY_COMMAND, CHIP_SELECT_TOGGLE_EVERY_BYTE, set_brightness, 2);
-            } else {
-                uint8_t command = self->brightness_command;
-                uint8_t hex_brightness = 0xff * brightness;
-                self->core.send(self->core.bus, DISPLAY_COMMAND, CHIP_SELECT_TOGGLE_EVERY_BYTE, &command, 1);
-                self->core.send(self->core.bus, DISPLAY_DATA, CHIP_SELECT_UNTOUCHED, &hex_brightness, 1);
-            }
-            displayio_display_core_end_transaction(&self->core);
-        }
-
-    }
-    if (ok) {
-        self->current_brightness = brightness;
-    }
-    return ok;
-}
-
-mp_obj_t common_hal_displayio_display_get_bus(displayio_display_obj_t *self) {
-    return self->core.bus;
-}
-
-mp_obj_t common_hal_displayio_display_get_root_group(displayio_display_obj_t *self) {
-    if (self->core.current_group == NULL) {
-        return mp_const_none;
-    }
-    return self->core.current_group;
-}
-
-STATIC const displayio_area_t *_get_refresh_areas(displayio_display_obj_t *self) {
-    if (self->core.full_refresh) {
-        self->core.area.next = NULL;
-        return &self->core.area;
-    } else if (self->core.current_group != NULL) {
-        return displayio_group_get_refresh_areas(self->core.current_group, NULL);
-    }
-    return NULL;
-}
-
-STATIC void _send_pixels(displayio_display_obj_t *self, uint8_t *pixels, uint32_t length) {
-    if (!self->core.data_as_commands) {
-        self->core.send(self->core.bus, DISPLAY_COMMAND, CHIP_SELECT_TOGGLE_EVERY_BYTE, &self->write_ram_command, 1);
-    }
-    self->core.send(self->core.bus, DISPLAY_DATA, CHIP_SELECT_UNTOUCHED, pixels, length);
-}
-
-STATIC bool _refresh_area(displayio_display_obj_t *self, const displayio_area_t *area) {
-    uint16_t buffer_size = 128; // In uint32_ts
-
-    displayio_area_t clipped;
-    // Clip the area to the display by overlapping the areas. If there is no overlap then we're done.
-    if (!displayio_display_core_clip_area(&self->core, area, &clipped)) {
-        return true;
-    }
-    uint16_t rows_per_buffer = displayio_area_height(&clipped);
-    uint8_t pixels_per_word = (sizeof(uint32_t) * 8) / self->core.colorspace.depth;
-    uint16_t pixels_per_buffer = displayio_area_size(&clipped);
-
-    uint16_t subrectangles = 1;
-    // for SH1107 and other boundary constrained controllers
-    //      write one single row at a time
-    if (self->core.SH1107_addressing) {
-        subrectangles = rows_per_buffer / 8;  // page addressing mode writes 8 rows at a time
-        rows_per_buffer = 8;
-    } else if (displayio_area_size(&clipped) > buffer_size * pixels_per_word) {
-        rows_per_buffer = buffer_size * pixels_per_word / displayio_area_width(&clipped);
-        if (rows_per_buffer == 0) {
-            rows_per_buffer = 1;
-        }
-        // If pixels are packed by column then ensure rows_per_buffer is on a byte boundary.
-        if (self->core.colorspace.depth < 8 && !self->core.colorspace.pixels_in_byte_share_row) {
-            uint8_t pixels_per_byte = 8 / self->core.colorspace.depth;
-            if (rows_per_buffer % pixels_per_byte != 0) {
-                rows_per_buffer -= rows_per_buffer % pixels_per_byte;
-            }
-        }
-        subrectangles = displayio_area_height(&clipped) / rows_per_buffer;
-        if (displayio_area_height(&clipped) % rows_per_buffer != 0) {
-            subrectangles++;
-        }
-        pixels_per_buffer = rows_per_buffer * displayio_area_width(&clipped);
-        buffer_size = pixels_per_buffer / pixels_per_word;
-        if (pixels_per_buffer % pixels_per_word) {
-            buffer_size += 1;
-        }
+//|     def show(self, group: Group) -> None:
+//|         """
+//|         .. note:: `show()` is deprecated and will be removed in CircuitPython 9.0.0.
+//|           Use ``.root_group = group`` instead.
+//|
+//|         Switches to displaying the given group of layers. When group is None, the default
+//|         CircuitPython terminal will be shown.
+//|
+//|         :param Group group: The group to show.
+//|
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_display_obj_show(mp_obj_t self_in, mp_obj_t group_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    displayio_group_t *group = NULL;
+    if (group_in != mp_const_none)
+    {
+        group = MP_OBJ_TO_PTR(native_group(group_in));
     }
 
-    // Allocated and shared as a uint32_t array so the compiler knows the
-    // alignment everywhere.
-    uint32_t buffer[buffer_size];
-    uint32_t mask_length = (pixels_per_buffer / 32) + 1;
-    uint32_t mask[mask_length];
-    uint16_t remaining_rows = displayio_area_height(&clipped);
-
-    for (uint16_t j = 0; j < subrectangles; j++) {
-        displayio_area_t subrectangle = {
-            .x1 = clipped.x1,
-            .y1 = clipped.y1 + rows_per_buffer * j,
-            .x2 = clipped.x2,
-            .y2 = clipped.y1 + rows_per_buffer * (j + 1)
-        };
-        if (remaining_rows < rows_per_buffer) {
-            subrectangle.y2 = subrectangle.y1 + remaining_rows;
-        }
-        remaining_rows -= rows_per_buffer;
-
-        displayio_display_core_set_region_to_update(&self->core, &subrectangle);
-
-        uint16_t subrectangle_size_bytes;
-        if (self->core.colorspace.depth >= 8) {
-            subrectangle_size_bytes = displayio_area_size(&subrectangle) * (self->core.colorspace.depth / 8);
-        } else {
-            subrectangle_size_bytes = displayio_area_size(&subrectangle) / (8 / self->core.colorspace.depth);
-        }
-
-        memset(mask, 0, mask_length * sizeof(mask[0]));
-        memset(buffer, 0, buffer_size * sizeof(buffer[0]));
-
-        displayio_display_core_fill_area(&self->core, &subrectangle, mask, buffer);
-
-        // Can't acquire display bus; skip the rest of the data.
-        if (!displayio_display_core_bus_free(&self->core)) {
-            return false;
-        }
-
-        displayio_display_core_begin_transaction(&self->core);
-        _send_pixels(self, (uint8_t *)buffer, subrectangle_size_bytes);
-        displayio_display_core_end_transaction(&self->core);
-
-        // TODO(tannewt): Make refresh displays faster so we don't starve other
-        // background tasks.
-        #if CIRCUITPY_USB
-        usb_background();
-        #endif
-    }
-    return true;
-}
-
-STATIC void _refresh_display(displayio_display_obj_t *self) {
-    if (!displayio_display_core_start_refresh(&self->core)) {
-        // A refresh on this bus is already in progress.  Try next display.
-        return;
-    }
-    const displayio_area_t *current_area = _get_refresh_areas(self);
-    while (current_area != NULL) {
-        _refresh_area(self, current_area);
-        current_area = current_area->next;
-    }
-    displayio_display_core_finish_refresh(&self->core);
-}
-
-void common_hal_displayio_display_set_rotation(displayio_display_obj_t *self, int rotation) {
-    bool transposed = (self->core.rotation == 90 || self->core.rotation == 270);
-    bool will_transposed = (rotation == 90 || rotation == 270);
-    if (transposed != will_transposed) {
-        int tmp = self->core.width;
-        self->core.width = self->core.height;
-        self->core.height = tmp;
-    }
-    displayio_display_core_set_rotation(&self->core, rotation);
-    if (self == &displays[0].display) {
-        supervisor_stop_terminal();
-        supervisor_start_terminal(self->core.width, self->core.height);
-    }
-    if (self->core.current_group != NULL) {
-        displayio_group_update_transform(self->core.current_group, &self->core.transform);
-    }
-}
-
-uint16_t common_hal_displayio_display_get_rotation(displayio_display_obj_t *self) {
-    return self->core.rotation;
-}
-
-
-bool common_hal_displayio_display_refresh(displayio_display_obj_t *self, uint32_t target_ms_per_frame, uint32_t maximum_ms_per_real_frame) {
-    if (!self->auto_refresh && !self->first_manual_refresh && (target_ms_per_frame != 0xffffffff)) {
-        uint64_t current_time = supervisor_ticks_ms64();
-        uint32_t current_ms_since_real_refresh = current_time - self->core.last_refresh;
-        // Test to see if the real frame time is below our minimum.
-        if (current_ms_since_real_refresh > maximum_ms_per_real_frame) {
-            mp_raise_RuntimeError(translate("Below minimum frame rate"));
-        }
-        uint32_t current_ms_since_last_call = current_time - self->last_refresh_call;
-        self->last_refresh_call = current_time;
-        // Skip the actual refresh to help catch up.
-        if (current_ms_since_last_call > target_ms_per_frame) {
-            return false;
-        }
-        uint32_t remaining_time = target_ms_per_frame - (current_ms_since_real_refresh % target_ms_per_frame);
-        // We're ahead of the game so wait until we align with the frame rate.
-        while (supervisor_ticks_ms64() - self->last_refresh_call < remaining_time) {
-            RUN_BACKGROUND_TASKS;
-        }
-    }
-    self->first_manual_refresh = false;
-    _refresh_display(self);
-    return true;
-}
-
-bool common_hal_displayio_display_get_auto_refresh(displayio_display_obj_t *self) {
-    return self->auto_refresh;
-}
-
-void common_hal_displayio_display_set_auto_refresh(displayio_display_obj_t *self,
-    bool auto_refresh) {
-    self->first_manual_refresh = !auto_refresh;
-    if (auto_refresh != self->auto_refresh) {
-        if (auto_refresh) {
-            supervisor_enable_tick();
-        } else {
-            supervisor_disable_tick();
-        }
-    }
-    self->auto_refresh = auto_refresh;
-}
-
-mp_obj_t common_hal_displayio_display_set_root_group(displayio_display_obj_t *self, displayio_group_t *root_group) {
-    bool ok = displayio_display_core_set_root_group(&self->core, root_group);
-    if (!ok) {
+    bool ok = common_hal_displayio_display_show(self, group);
+    if (!ok)
+    {
         mp_raise_ValueError(translate("Group already used"));
     }
     return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_display_show_obj, displayio_display_obj_show);
 
-void displayio_display_background(displayio_display_obj_t *self) {
-    if (self->auto_refresh && (supervisor_ticks_ms64() - self->core.last_refresh) > self->native_ms_per_frame) {
-        _refresh_display(self);
+//|     def refresh(
+//|         self,
+//|         *,
+//|         target_frames_per_second: Optional[int] = None,
+//|         minimum_frames_per_second: int = 0
+//|     ) -> bool:
+//|         """When auto_refresh is off, and :py:attr:`target_frames_per_second` is not `None` this waits
+//|         for the target frame rate and then refreshes the display,
+//|         returning `True`. If the call has taken too long since the last refresh call for the given
+//|         target frame rate, then the refresh returns `False` immediately without updating the screen to
+//|         hopefully help getting caught up.
+//|
+//|         If the time since the last successful refresh is below the minimum frame rate, then an
+//|         exception will be raised. The default :py:attr:`minimum_frames_per_second` of 0 disables this behavior.
+//|
+//|         When auto_refresh is off, and :py:attr:`target_frames_per_second` is `None` this
+//|         will update the display immediately.
+//|
+//|         When auto_refresh is on, updates the display immediately. (The display will also update
+//|         without calls to this.)
+//|
+//|         :param Optional[int] target_frames_per_second: The target frame rate that :py:func:`refresh` should try to
+//|             achieve. Set to `None` for immediate refresh.
+//|         :param int minimum_frames_per_second: The minimum number of times the screen should be updated per second.
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_display_obj_refresh(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    enum
+    {
+        ARG_target_frames_per_second,
+        ARG_minimum_frames_per_second
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_target_frames_per_second, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+        {MP_QSTR_minimum_frames_per_second, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0}},
+    };
+
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    displayio_display_obj_t *self = native_display(pos_args[0]);
+    uint32_t maximum_ms_per_real_frame = 0xffffffff;
+    mp_int_t minimum_frames_per_second = args[ARG_minimum_frames_per_second].u_int;
+    if (minimum_frames_per_second > 0)
+    {
+        maximum_ms_per_real_frame = 1000 / minimum_frames_per_second;
+    }
+
+    uint32_t target_ms_per_frame;
+    if (args[ARG_target_frames_per_second].u_obj == mp_const_none)
+    {
+        target_ms_per_frame = 0xffffffff;
+    }
+    else
+    {
+        target_ms_per_frame = 1000 / mp_obj_get_int(args[ARG_target_frames_per_second].u_obj);
+    }
+
+    return mp_obj_new_bool(common_hal_displayio_display_refresh(self, target_ms_per_frame, maximum_ms_per_real_frame));
+}
+
+MP_DEFINE_CONST_FUN_OBJ_KW(displayio_display_refresh_obj, 1, displayio_display_obj_refresh);
+
+//|     auto_refresh: bool
+//|     """True when the display is refreshed automatically."""
+STATIC mp_obj_t displayio_display_obj_get_auto_refresh(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return mp_obj_new_bool(common_hal_displayio_display_get_auto_refresh(self));
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_auto_refresh_obj, displayio_display_obj_get_auto_refresh);
+
+STATIC mp_obj_t displayio_display_obj_set_auto_refresh(mp_obj_t self_in, mp_obj_t auto_refresh)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+
+    common_hal_displayio_display_set_auto_refresh(self, mp_obj_is_true(auto_refresh));
+
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_display_set_auto_refresh_obj, displayio_display_obj_set_auto_refresh);
+
+MP_PROPERTY_GETSET(displayio_display_auto_refresh_obj,
+                   (mp_obj_t)&displayio_display_get_auto_refresh_obj,
+                   (mp_obj_t)&displayio_display_set_auto_refresh_obj);
+
+//|     brightness: float
+//|     """The brightness of the display as a float. 0.0 is off and 1.0 is full brightness."""
+STATIC mp_obj_t displayio_display_obj_get_brightness(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    mp_float_t brightness = common_hal_displayio_display_get_brightness(self);
+    if (brightness < 0)
+    {
+        mp_raise_RuntimeError(translate("Brightness not adjustable"));
+    }
+    return mp_obj_new_float(brightness);
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_brightness_obj, displayio_display_obj_get_brightness);
+
+STATIC mp_obj_t displayio_display_obj_set_brightness(mp_obj_t self_in, mp_obj_t brightness_obj)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    mp_float_t brightness = mp_obj_get_float(brightness_obj);
+    if (brightness < 0 || brightness > 1.0)
+    {
+        mp_raise_ValueError_varg(translate("%q must be %d-%d"), MP_QSTR_brightness, 0, 1);
+    }
+    bool ok = common_hal_displayio_display_set_brightness(self, brightness);
+    if (!ok)
+    {
+        mp_raise_RuntimeError(translate("Brightness not adjustable"));
+    }
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_display_set_brightness_obj, displayio_display_obj_set_brightness);
+
+MP_PROPERTY_GETSET(displayio_display_brightness_obj,
+                   (mp_obj_t)&displayio_display_get_brightness_obj,
+                   (mp_obj_t)&displayio_display_set_brightness_obj);
+
+//|     width: int
+//|     """Gets the width of the board"""
+STATIC mp_obj_t displayio_display_obj_get_width(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_display_get_width(self));
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_width_obj, displayio_display_obj_get_width);
+
+MP_PROPERTY_GETTER(displayio_display_width_obj,
+                   (mp_obj_t)&displayio_display_get_width_obj);
+
+//|     height: int
+//|     """Gets the height of the board"""
+STATIC mp_obj_t displayio_display_obj_get_height(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_display_get_height(self));
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_height_obj, displayio_display_obj_get_height);
+
+MP_PROPERTY_GETTER(displayio_display_height_obj,
+                   (mp_obj_t)&displayio_display_get_height_obj);
+
+//|     rotation: int
+//|     """The rotation of the display as an int in degrees."""
+STATIC mp_obj_t displayio_display_obj_get_rotation(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_display_get_rotation(self));
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_rotation_obj, displayio_display_obj_get_rotation);
+STATIC mp_obj_t displayio_display_obj_set_rotation(mp_obj_t self_in, mp_obj_t value)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    common_hal_displayio_display_set_rotation(self, mp_obj_get_int(value));
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_display_set_rotation_obj, displayio_display_obj_set_rotation);
+
+MP_PROPERTY_GETSET(displayio_display_rotation_obj,
+                   (mp_obj_t)&displayio_display_get_rotation_obj,
+                   (mp_obj_t)&displayio_display_set_rotation_obj);
+
+//|     bus: _DisplayBus
+//|     """The bus being used by the display"""
+STATIC mp_obj_t displayio_display_obj_get_bus(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return common_hal_displayio_display_get_bus(self);
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_bus_obj, displayio_display_obj_get_bus);
+
+MP_PROPERTY_GETTER(displayio_display_bus_obj,
+                   (mp_obj_t)&displayio_display_get_bus_obj);
+
+//|     root_group: Group
+//|     """The root group on the display.
+//|     If the root group is set to `displayio.CIRCUITPYTHON_TERMINAL`, the default CircuitPython terminal will be shown.
+//|     If the root group is set to ``None``, no output will be shown.
+//|     """
+STATIC mp_obj_t displayio_display_obj_get_root_group(mp_obj_t self_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    return common_hal_displayio_display_get_root_group(self);
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_display_get_root_group_obj, displayio_display_obj_get_root_group);
+
+STATIC mp_obj_t displayio_display_obj_set_root_group(mp_obj_t self_in, mp_obj_t group_in)
+{
+    displayio_display_obj_t *self = native_display(self_in);
+    displayio_group_t *group = NULL;
+    if (group_in != mp_const_none)
+    {
+        group = MP_OBJ_TO_PTR(native_group(group_in));
+    }
+
+    common_hal_displayio_display_set_root_group(self, group);
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_display_set_root_group_obj, displayio_display_obj_set_root_group);
+
+MP_PROPERTY_GETSET(displayio_display_root_group_obj,
+                   (mp_obj_t)&displayio_display_get_root_group_obj,
+                   (mp_obj_t)&displayio_display_set_root_group_obj);
+
+//|     def fill_row(self, y: int, buffer: WriteableBuffer) -> WriteableBuffer:
+//|         """Extract the pixels from a single row
+//|
+//|         :param int y: The top edge of the area
+//|         :param ~circuitpython_typing.WriteableBuffer buffer: The buffer in which to place the pixel data
+//|         """
+//|         ...
+//|
+STATIC mp_obj_t displayio_display_obj_fill_row(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    enum
+    {
+        ARG_y,
+        ARG_buffer
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_y, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = -1}},
+        {MP_QSTR_buffer, MP_ARG_OBJ | MP_ARG_REQUIRED, {}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+    displayio_display_obj_t *self = native_display(pos_args[0]);
+    mp_int_t y = args[ARG_y].u_int;
+    mp_obj_t *result = args[ARG_buffer].u_obj;
+
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(result, &bufinfo, MP_BUFFER_WRITE);
+
+    if (self->core.colorspace.depth != 16)
+    {
+        mp_raise_ValueError(translate("Display must have a 16 bit colorspace."));
+    }
+
+    displayio_area_t area = {
+        .x1 = 0,
+        .y1 = y,
+        .x2 = self->core.width,
+        .y2 = y + 1};
+    uint8_t pixels_per_word = (sizeof(uint32_t) * 8) / self->core.colorspace.depth;
+    uint16_t buffer_size = self->core.width / pixels_per_word;
+    uint16_t pixels_per_buffer = displayio_area_size(&area);
+    if (pixels_per_buffer % pixels_per_word)
+    {
+        buffer_size += 1;
+    }
+
+    uint32_t *result_buffer = bufinfo.buf;
+    size_t result_buffer_size = bufinfo.len;
+
+    if (result_buffer_size >= (buffer_size * 4))
+    {
+        volatile uint32_t mask_length = (pixels_per_buffer / 32) + 1;
+        uint32_t mask[mask_length];
+
+        for (uint16_t k = 0; k < mask_length; k++)
+        {
+            mask[k] = 0x00000000;
+        }
+
+        displayio_display_core_fill_area(&self->core, &area, mask, result_buffer);
+        return result;
+    }
+    else
+    {
+        mp_raise_ValueError(translate("Buffer too small"));
     }
 }
+MP_DEFINE_CONST_FUN_OBJ_KW(displayio_display_fill_row_obj, 1, displayio_display_obj_fill_row);
 
-void release_display(displayio_display_obj_t *self) {
-    common_hal_displayio_display_set_auto_refresh(self, false);
-    release_display_core(&self->core);
-    #if (CIRCUITPY_PWMIO)
-    if (self->backlight_pwm.base.type == &pwmio_pwmout_type) {
-        common_hal_pwmio_pwmout_deinit(&self->backlight_pwm);
-    } else if (self->backlight_inout.base.type == &digitalio_digitalinout_type) {
-        common_hal_digitalio_digitalinout_deinit(&self->backlight_inout);
-    }
-    #else
-    common_hal_digitalio_digitalinout_deinit(&self->backlight_inout);
-    #endif
-}
+STATIC const mp_rom_map_elem_t displayio_display_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_show), MP_ROM_PTR(&displayio_display_show_obj)},
+    {MP_ROM_QSTR(MP_QSTR_refresh), MP_ROM_PTR(&displayio_display_refresh_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fill_row), MP_ROM_PTR(&displayio_display_fill_row_obj)},
 
-void reset_display(displayio_display_obj_t *self) {
-    common_hal_displayio_display_set_auto_refresh(self, true);
-    circuitpython_splash.x = 0; // reset position in case someone moved it.
-    circuitpython_splash.y = 0;
-    supervisor_start_terminal(self->core.width, self->core.height);
-    if (!circuitpython_splash.in_group) {
-        common_hal_displayio_display_set_root_group(self, &circuitpython_splash);
-    }
-}
+    {MP_ROM_QSTR(MP_QSTR_auto_refresh), MP_ROM_PTR(&displayio_display_auto_refresh_obj)},
 
-void displayio_display_collect_ptrs(displayio_display_obj_t *self) {
-    displayio_display_core_collect_ptrs(&self->core);
-}
+    {MP_ROM_QSTR(MP_QSTR_brightness), MP_ROM_PTR(&displayio_display_brightness_obj)},
+
+    {MP_ROM_QSTR(MP_QSTR_width), MP_ROM_PTR(&displayio_display_width_obj)},
+    {MP_ROM_QSTR(MP_QSTR_height), MP_ROM_PTR(&displayio_display_height_obj)},
+    {MP_ROM_QSTR(MP_QSTR_rotation), MP_ROM_PTR(&displayio_display_rotation_obj)},
+    {MP_ROM_QSTR(MP_QSTR_bus), MP_ROM_PTR(&displayio_display_bus_obj)},
+    {MP_ROM_QSTR(MP_QSTR_root_group), MP_ROM_PTR(&displayio_display_root_group_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_display_locals_dict, displayio_display_locals_dict_table);
+
+const mp_obj_type_t displayio_display_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_Display,
+    .make_new = displayio_display_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_display_locals_dict,
+};

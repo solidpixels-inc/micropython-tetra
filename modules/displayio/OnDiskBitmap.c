@@ -24,185 +24,139 @@
  * THE SOFTWARE.
  */
 
-#include "shared-bindings/displayio/OnDiskBitmap.h"
-#include "shared-bindings/displayio/ColorConverter.h"
-#include "shared-bindings/displayio/Palette.h"
-#include "shared-module/displayio/ColorConverter.h"
-#include "shared-module/displayio/Palette.h"
+#include "modules/displayio/OnDiskBitmap.h"
 
-#include <string.h>
+#include <stdint.h>
 
-#include "py/mperrno.h"
 #include "py/runtime.h"
+#include "py/objproperty.h"
+#include "supervisor/shared/translate/translate.h"
+#include "modules/displayio/OnDiskBitmap.h"
 
-static uint32_t read_word(uint16_t *bmp_header, uint16_t index) {
-    return bmp_header[index] | bmp_header[index + 1] << 16;
+//| class OnDiskBitmap:
+//|     """Loads values straight from disk. This minimizes memory use but can lead to
+//|     much slower pixel load times. These load times may result in frame tearing where only part of
+//|     the image is visible.
+//|
+//|     It's easiest to use on a board with a built in display such as the `Hallowing M0 Express
+//|     <https://www.adafruit.com/product/3900>`_.
+//|
+//|     .. code-block:: Python
+//|
+//|       import board
+//|       import displayio
+//|       import time
+//|       import pulseio
+//|
+//|       board.DISPLAY.brightness = 0
+//|       splash = displayio.Group()
+//|       board.DISPLAY.show(splash)
+//|
+//|       odb = displayio.OnDiskBitmap('/sample.bmp')
+//|       face = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
+//|       splash.append(face)
+//|       # Wait for the image to load.
+//|       board.DISPLAY.refresh(target_frames_per_second=60)
+//|
+//|       # Fade up the backlight
+//|       for i in range(100):
+//|           board.DISPLAY.brightness = 0.01 * i
+//|           time.sleep(0.05)
+//|
+//|       # Wait forever
+//|       while True:
+//|           pass"""
+//|
+//|     def __init__(self, file: Union[str, typing.BinaryIO]) -> None:
+//|         """Create an OnDiskBitmap object with the given file.
+//|
+//|         :param file file: The name of the bitmap file.  For backwards compatibility, a file opened in binary mode may also be passed.
+//|
+//|         Older versions of CircuitPython required a file opened in binary
+//|         mode. CircuitPython 7.0 modified OnDiskBitmap so that it takes a
+//|         filename instead, and opens the file internally.  A future version
+//|         of CircuitPython will remove the ability to pass in an opened file.
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_ondiskbitmap_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args)
+{
+    mp_arg_check_num(n_args, n_kw, 1, 1, false);
+    mp_obj_t arg = all_args[0];
+
+    if (mp_obj_is_str(arg))
+    {
+        arg = mp_call_function_2(MP_OBJ_FROM_PTR(&mp_builtin_open_obj), arg, MP_ROM_QSTR(MP_QSTR_rb));
+    }
+    if (!mp_obj_is_type(arg, &mp_type_fileio))
+    {
+        mp_raise_TypeError(translate("file must be a file opened in byte mode"));
+    }
+
+    displayio_ondiskbitmap_t *self = m_new_obj(displayio_ondiskbitmap_t);
+    self->base.type = &displayio_ondiskbitmap_type;
+    common_hal_displayio_ondiskbitmap_construct(self, MP_OBJ_TO_PTR(arg));
+
+    return MP_OBJ_FROM_PTR(self);
 }
 
-void common_hal_displayio_ondiskbitmap_construct(displayio_ondiskbitmap_t *self, pyb_file_obj_t *file) {
-    // Load the wave
-    self->file = file;
-    uint16_t bmp_header[69];
-    f_rewind(&self->file->fp);
-    UINT bytes_read;
-    if (f_read(&self->file->fp, bmp_header, 138, &bytes_read) != FR_OK) {
-        mp_raise_OSError(MP_EIO);
-    }
-    if (bytes_read != 138 ||
-        memcmp(bmp_header, "BM", 2) != 0) {
-        mp_arg_error_invalid(MP_QSTR_file);
-    }
+//|     width: int
+//|     """Width of the bitmap. (read only)"""
+STATIC mp_obj_t displayio_ondiskbitmap_obj_get_width(mp_obj_t self_in)
+{
+    displayio_ondiskbitmap_t *self = MP_OBJ_TO_PTR(self_in);
 
-    // We can't cast because we're not aligned.
-    self->data_offset = read_word(bmp_header, 5);
-
-    uint32_t header_size = read_word(bmp_header, 7);
-    uint16_t bits_per_pixel = bmp_header[14];
-    uint32_t compression = read_word(bmp_header, 15);
-    uint32_t number_of_colors = read_word(bmp_header, 23);
-
-    bool indexed = bits_per_pixel <= 8;
-    self->bitfield_compressed = (compression == 3);
-    self->bits_per_pixel = bits_per_pixel;
-    self->width = read_word(bmp_header, 9);
-    self->height = read_word(bmp_header, 11);
-
-    displayio_colorconverter_t *colorconverter = m_new_obj(displayio_colorconverter_t);
-    colorconverter->base.type = &displayio_colorconverter_type;
-    common_hal_displayio_colorconverter_construct(colorconverter, false, DISPLAYIO_COLORSPACE_RGB888);
-    self->colorconverter = colorconverter;
-
-    if (bits_per_pixel == 16) {
-        if (((header_size >= 56)) || (self->bitfield_compressed)) {
-            self->r_bitmask = read_word(bmp_header, 27);
-            self->g_bitmask = read_word(bmp_header, 29);
-            self->b_bitmask = read_word(bmp_header, 31);
-
-        } else { // no compression or short header means 5:5:5
-            self->r_bitmask = 0x7c00;
-            self->g_bitmask = 0x3e0;
-            self->b_bitmask = 0x1f;
-        }
-    } else if (indexed) {
-        if (number_of_colors == 0) {
-            number_of_colors = 1 << bits_per_pixel;
-        }
-
-        displayio_palette_t *palette = m_new_obj(displayio_palette_t);
-        palette->base.type = &displayio_palette_type;
-        common_hal_displayio_palette_construct(palette, number_of_colors, false);
-
-        if (number_of_colors > 1) {
-            uint16_t palette_size = number_of_colors * sizeof(uint32_t);
-            uint16_t palette_offset = 0xe + header_size;
-
-            uint32_t *palette_data = m_malloc(palette_size, false);
-
-            f_rewind(&self->file->fp);
-            f_lseek(&self->file->fp, palette_offset);
-
-            UINT palette_bytes_read;
-            if (f_read(&self->file->fp, palette_data, palette_size, &palette_bytes_read) != FR_OK) {
-                mp_raise_OSError(MP_EIO);
-            }
-            if (palette_bytes_read != palette_size) {
-                mp_raise_ValueError(translate("Unable to read color palette data"));
-            }
-            for (uint16_t i = 0; i < number_of_colors; i++) {
-                common_hal_displayio_palette_set_color(palette, i, palette_data[i]);
-            }
-            m_free(palette_data);
-        } else {
-            common_hal_displayio_palette_set_color(palette, 0, 0x0);
-            common_hal_displayio_palette_set_color(palette, 1, 0xffffff);
-        }
-        self->palette = palette;
-
-    } else if (!(header_size == 12 || header_size == 40 || header_size == 108 || header_size == 124)) {
-        mp_raise_ValueError_varg(translate("Only Windows format, uncompressed BMP supported: given header size is %d"), header_size);
-    }
-
-    if (bits_per_pixel == 8 && number_of_colors == 0) {
-        mp_raise_ValueError_varg(translate("Only monochrome, indexed 4bpp or 8bpp, and 16bpp or greater BMPs supported: %d bpp given"), bits_per_pixel);
-    }
-
-    uint8_t bytes_per_pixel = (self->bits_per_pixel / 8)  ? (self->bits_per_pixel / 8) : 1;
-    uint8_t pixels_per_byte = 8 / self->bits_per_pixel;
-    if (pixels_per_byte == 0) {
-        self->stride = (self->width * bytes_per_pixel);
-        // Rows are word aligned.
-        if (self->stride % 4 != 0) {
-            self->stride += 4 - self->stride % 4;
-        }
-    } else {
-        uint32_t bit_stride = self->width * self->bits_per_pixel;
-        if (bit_stride % 32 != 0) {
-            bit_stride += 32 - bit_stride % 32;
-        }
-        self->stride = (bit_stride / 8);
-    }
-
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_ondiskbitmap_get_width(self));
 }
 
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_ondiskbitmap_get_width_obj, displayio_ondiskbitmap_obj_get_width);
 
-uint32_t common_hal_displayio_ondiskbitmap_get_pixel(displayio_ondiskbitmap_t *self,
-    int16_t x, int16_t y) {
-    if (x < 0 || x >= self->width || y < 0 || y >= self->height) {
-        return 0;
-    }
+MP_PROPERTY_GETTER(displayio_ondiskbitmap_width_obj,
+                   (mp_obj_t)&displayio_ondiskbitmap_get_width_obj);
 
-    uint32_t location;
-    uint8_t bytes_per_pixel = (self->bits_per_pixel / 8)  ? (self->bits_per_pixel / 8) : 1;
-    uint8_t pixels_per_byte = 8 / self->bits_per_pixel;
-    if (pixels_per_byte == 0) {
-        location = self->data_offset + (self->height - y - 1) * self->stride + x * bytes_per_pixel;
-    } else {
-        location = self->data_offset + (self->height - y - 1) * self->stride + x / pixels_per_byte;
-    }
-    // We don't cache here because the underlying FS caches sectors.
-    f_lseek(&self->file->fp, location);
-    UINT bytes_read;
-    uint32_t pixel_data = 0;
-    uint32_t result = f_read(&self->file->fp, &pixel_data, bytes_per_pixel, &bytes_read);
-    if (result == FR_OK) {
-        uint32_t tmp = 0;
-        uint8_t red;
-        uint8_t green;
-        uint8_t blue;
-        if (bytes_per_pixel == 1) {
-            uint8_t offset = (x % pixels_per_byte) * self->bits_per_pixel;
-            uint8_t mask = (1 << self->bits_per_pixel) - 1;
+//|     height: int
+//|     """Height of the bitmap. (read only)"""
+STATIC mp_obj_t displayio_ondiskbitmap_obj_get_height(mp_obj_t self_in)
+{
+    displayio_ondiskbitmap_t *self = MP_OBJ_TO_PTR(self_in);
 
-            return (pixel_data >> ((8 - self->bits_per_pixel) - offset)) & mask;
-        } else if (bytes_per_pixel == 2) {
-            if (self->g_bitmask == 0x07e0) { // 565
-                red = ((pixel_data & self->r_bitmask) >> 11);
-                green = ((pixel_data & self->g_bitmask) >> 5);
-                blue = ((pixel_data & self->b_bitmask) >> 0);
-            } else { // 555
-                red = ((pixel_data & self->r_bitmask) >> 10);
-                green = ((pixel_data & self->g_bitmask) >> 4);
-                blue = ((pixel_data & self->b_bitmask) >> 0);
-            }
-            tmp = (red << 19 | green << 10 | blue << 3);
-            return tmp;
-        } else if ((bytes_per_pixel == 4) && (self->bitfield_compressed)) {
-            return pixel_data & 0x00FFFFFF;
-        } else {
-            return pixel_data;
-        }
-    }
-    return 0;
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_ondiskbitmap_get_height(self));
 }
 
-uint16_t common_hal_displayio_ondiskbitmap_get_height(displayio_ondiskbitmap_t *self) {
-    return self->height;
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_ondiskbitmap_get_height_obj, displayio_ondiskbitmap_obj_get_height);
+
+MP_PROPERTY_GETTER(displayio_ondiskbitmap_height_obj,
+                   (mp_obj_t)&displayio_ondiskbitmap_get_height_obj);
+
+//|     pixel_shader: Union[ColorConverter, Palette]
+//|     """The image's pixel_shader.  The type depends on the underlying
+//|     bitmap's structure.  The pixel shader can be modified (e.g., to set the
+//|     transparent pixel or, for palette shaded images, to update the palette.)"""
+//|
+STATIC mp_obj_t displayio_ondiskbitmap_obj_get_pixel_shader(mp_obj_t self_in)
+{
+    displayio_ondiskbitmap_t *self = MP_OBJ_TO_PTR(self_in);
+    return common_hal_displayio_ondiskbitmap_get_pixel_shader(self);
 }
 
-uint16_t common_hal_displayio_ondiskbitmap_get_width(displayio_ondiskbitmap_t *self) {
-    return self->width;
-}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_ondiskbitmap_get_pixel_shader_obj, displayio_ondiskbitmap_obj_get_pixel_shader);
 
-mp_obj_t common_hal_displayio_ondiskbitmap_get_pixel_shader(displayio_ondiskbitmap_t *self) {
-    return MP_OBJ_FROM_PTR(self->pixel_shader_base);
-}
+const mp_obj_property_t displayio_ondiskbitmap_pixel_shader_obj = {
+    .base.type = &mp_type_property,
+    .proxy = {(mp_obj_t)&displayio_ondiskbitmap_get_pixel_shader_obj,
+              (mp_obj_t)MP_ROM_NONE,
+              (mp_obj_t)MP_ROM_NONE},
+};
+
+STATIC const mp_rom_map_elem_t displayio_ondiskbitmap_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_height), MP_ROM_PTR(&displayio_ondiskbitmap_height_obj)},
+    {MP_ROM_QSTR(MP_QSTR_pixel_shader), MP_ROM_PTR(&displayio_ondiskbitmap_pixel_shader_obj)},
+    {MP_ROM_QSTR(MP_QSTR_width), MP_ROM_PTR(&displayio_ondiskbitmap_width_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_ondiskbitmap_locals_dict, displayio_ondiskbitmap_locals_dict_table);
+
+const mp_obj_type_t displayio_ondiskbitmap_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_OnDiskBitmap,
+    .make_new = displayio_ondiskbitmap_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_ondiskbitmap_locals_dict,
+};

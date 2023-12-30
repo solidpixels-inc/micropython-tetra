@@ -1,3 +1,5 @@
+
+
 /*
  * This file is part of the Micro Python project, http://micropython.org/
  *
@@ -24,276 +26,418 @@
  * THE SOFTWARE.
  */
 
-#include "shared-bindings/displayio/Bitmap.h"
+#include "modules/displayio/Bitmap.h"
+#include "modules/displayio/displayio-shared-module/Bitmap.h"
 
-#include <string.h>
+#include <stdint.h>
 
+#include "shared/runtime/context_manager_helpers.h"
+#include "py/binary.h"
+#include "py/objproperty.h"
 #include "py/runtime.h"
-#include "py/gc.h"
+#include "modules/util.h"
+#include "supervisor/shared/translate/translate.h"
 
-enum { ALIGN_BITS = 8 * sizeof(uint32_t) };
+//| class Bitmap:
+//|     """Stores values of a certain size in a 2D array
+//|
+//|     Bitmaps can be treated as read-only buffers. If the number of bits in a pixel is 8, 16, or 32; and the number of bytes
+//|     per row is a multiple of 4, then the resulting memoryview will correspond directly with the bitmap's contents. Otherwise,
+//|     the bitmap data is packed into the memoryview with unspecified padding.
+//|
+//|     A Bitmap can be treated as a buffer, allowing its content to be
+//|     viewed and modified using e.g., with ``ulab.numpy.frombuffer``,
+//|     but the `displayio.Bitmap.dirty` method must be used to inform
+//|     displayio when a bitmap was modified through the buffer interface.
+//|
+//|     `bitmaptools.arrayblit` can also be useful to move data efficiently
+//|     into a Bitmap."""
+//|
+//|     def __init__(self, width: int, height: int, value_count: int) -> None:
+//|         """Create a Bitmap object with the given fixed size. Each pixel stores a value that is used to
+//|         index into a corresponding palette. This enables differently colored sprites to share the
+//|         underlying Bitmap. value_count is used to minimize the memory used to store the Bitmap.
+//|
+//|         :param int width: The number of values wide
+//|         :param int height: The number of values high
+//|         :param int value_count: The number of possible pixel values."""
+//|         ...
+STATIC mp_obj_t displayio_bitmap_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args)
+{
+    mp_arg_check_num(n_args, n_kw, 3, 3, false);
+    uint32_t width = mp_arg_validate_int_range(mp_obj_get_int(all_args[0]), 0, 32767, MP_QSTR_width);
+    uint32_t height = mp_arg_validate_int_range(mp_obj_get_int(all_args[1]), 0, 32767, MP_QSTR_height);
+    uint32_t value_count = mp_arg_validate_int_range(mp_obj_get_int(all_args[2]), 1, 65536, MP_QSTR_value_count);
+    uint32_t bits = 1;
 
-static int stride(uint32_t width, uint32_t bits_per_value) {
-    uint32_t row_width = width * bits_per_value;
-    // align to uint32_t
-    return (row_width + ALIGN_BITS - 1) / ALIGN_BITS;
-}
-
-void common_hal_displayio_bitmap_construct(displayio_bitmap_t *self, uint32_t width,
-    uint32_t height, uint32_t bits_per_value) {
-    common_hal_displayio_bitmap_construct_from_buffer(self, width, height, bits_per_value, NULL, false);
-}
-
-void common_hal_displayio_bitmap_construct_from_buffer(displayio_bitmap_t *self, uint32_t width,
-    uint32_t height, uint32_t bits_per_value, uint32_t *data, bool read_only) {
-    self->width = width;
-    self->height = height;
-    self->stride = stride(width, bits_per_value);
-    self->data_alloc = false;
-    if (!data) {
-        data = m_malloc(self->stride * height * sizeof(uint32_t), false);
-        self->data_alloc = true;
-    }
-    self->data = data;
-    self->read_only = read_only;
-    self->bits_per_value = bits_per_value;
-
-    if (bits_per_value > 8 && bits_per_value != 16 && bits_per_value != 32) {
-        mp_raise_NotImplementedError(translate("Invalid bits per value"));
-    }
-
-    // Division and modulus can be slow because it has to handle any integer. We know bits_per_value
-    // is a power of two. We divide and mod by bits_per_value to compute the offset into the byte
-    // array. So, we can the offset computation to simplify to a shift for division and mask for mod.
-
-    self->x_shift = 0; // Used to divide the index by the number of pixels per word. Its used in a
-                       // shift which effectively divides by 2 ** x_shift.
-    uint32_t power_of_two = 1;
-    while (power_of_two < ALIGN_BITS / bits_per_value) {
-        self->x_shift++;
-        power_of_two <<= 1;
-    }
-    self->x_mask = (1u << self->x_shift) - 1u; // Used as a modulus on the x value
-    self->bitmask = (1u << bits_per_value) - 1u;
-
-    self->dirty_area.x1 = 0;
-    self->dirty_area.x2 = width;
-    self->dirty_area.y1 = 0;
-    self->dirty_area.y2 = height;
-}
-
-void common_hal_displayio_bitmap_deinit(displayio_bitmap_t *self) {
-    if (self->data_alloc) {
-        gc_free(self->data);
-    }
-    self->data = NULL;
-}
-
-bool common_hal_displayio_bitmap_deinited(displayio_bitmap_t *self) {
-    return self->data == NULL;
-}
-
-uint16_t common_hal_displayio_bitmap_get_height(displayio_bitmap_t *self) {
-    return self->height;
-}
-
-uint16_t common_hal_displayio_bitmap_get_width(displayio_bitmap_t *self) {
-    return self->width;
-}
-
-uint32_t common_hal_displayio_bitmap_get_bits_per_value(displayio_bitmap_t *self) {
-    return self->bits_per_value;
-}
-
-uint32_t common_hal_displayio_bitmap_get_pixel(displayio_bitmap_t *self, int16_t x, int16_t y) {
-    if (x >= self->width || x < 0 || y >= self->height || y < 0) {
-        return 0;
-    }
-    int32_t row_start = y * self->stride;
-    uint32_t bytes_per_value = self->bits_per_value / 8;
-    if (bytes_per_value < 1) {
-        uint32_t word = self->data[row_start + (x >> self->x_shift)];
-
-        return (word >> (sizeof(uint32_t) * 8 - ((x & self->x_mask) + 1) * self->bits_per_value)) & self->bitmask;
-    } else {
-        uint32_t *row = self->data + row_start;
-        if (bytes_per_value == 1) {
-            return ((uint8_t *)row)[x];
-        } else if (bytes_per_value == 2) {
-            return ((uint16_t *)row)[x];
-        } else if (bytes_per_value == 4) {
-            return ((uint32_t *)row)[x];
+    while ((value_count - 1) >> bits)
+    {
+        if (bits < 8)
+        {
+            bits <<= 1;
+        }
+        else
+        {
+            bits += 8;
         }
     }
-    return 0;
+
+    displayio_bitmap_t *self = m_new_obj(displayio_bitmap_t);
+    self->base.type = &displayio_bitmap_type;
+    common_hal_displayio_bitmap_construct(self, width, height, bits);
+
+    return MP_OBJ_FROM_PTR(self);
 }
 
-void displayio_bitmap_set_dirty_area(displayio_bitmap_t *self, const displayio_area_t *dirty_area) {
-    if (self->read_only) {
-        mp_raise_RuntimeError(translate("Read-only"));
+STATIC void check_for_deinit(displayio_bitmap_t *self)
+{
+    if (common_hal_displayio_bitmap_deinited(self))
+    {
+        raise_deinited_error();
     }
-
-    displayio_area_t area = *dirty_area;
-    displayio_area_canon(&area);
-    displayio_area_union(&area, &self->dirty_area, &area);
-    displayio_area_t bitmap_area = {0, 0, self->width, self->height, NULL};
-    displayio_area_compute_overlap(&area, &bitmap_area, &self->dirty_area);
 }
 
-void displayio_bitmap_write_pixel(displayio_bitmap_t *self, int16_t x, int16_t y, uint32_t value) {
-    if (self->read_only) {
-        mp_raise_RuntimeError(translate("Read-only"));
-    }
-    // Writes the color index value into a pixel position
-    // Must update the dirty area separately
+//|     width: int
+//|     """Width of the bitmap. (read only)"""
+STATIC mp_obj_t displayio_bitmap_obj_get_width(mp_obj_t self_in)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
 
-    // Don't write if out of area
-    if (0 > x || x >= self->width || 0 > y || y >= self->height) {
-        return;
+    check_for_deinit(self);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_bitmap_get_width(self));
+}
+
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_bitmap_get_width_obj, displayio_bitmap_obj_get_width);
+
+MP_PROPERTY_GETTER(displayio_bitmap_width_obj,
+                   (mp_obj_t)&displayio_bitmap_get_width_obj);
+
+//|     height: int
+//|     """Height of the bitmap. (read only)"""
+STATIC mp_obj_t displayio_bitmap_obj_get_height(mp_obj_t self_in)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
+
+    check_for_deinit(self);
+    return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_bitmap_get_height(self));
+}
+
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_bitmap_get_height_obj, displayio_bitmap_obj_get_height);
+
+MP_PROPERTY_GETTER(displayio_bitmap_height_obj,
+                   (mp_obj_t)&displayio_bitmap_get_height_obj);
+
+//|     def __getitem__(self, index: Union[Tuple[int, int], int]) -> int:
+//|         """Returns the value at the given index. The index can either be an x,y tuple or an int equal
+//|         to ``y * width + x``.
+//|
+//|         This allows you to::
+//|
+//|           print(bitmap[0,1])"""
+//|         ...
+//|     def __setitem__(self, index: Union[Tuple[int, int], int], value: int) -> None:
+//|         """Sets the value at the given index. The index can either be an x,y tuple or an int equal
+//|         to ``y * width + x``.
+//|
+//|         This allows you to::
+//|
+//|           bitmap[0,1] = 3"""
+//|         ...
+STATIC mp_obj_t bitmap_subscr(mp_obj_t self_in, mp_obj_t index_obj, mp_obj_t value_obj)
+{
+    if (value_obj == mp_const_none)
+    {
+        // delete item
+        mp_raise_AttributeError(translate("Cannot delete values"));
+        return mp_const_none;
     }
 
-    // Update one pixel of data
-    int32_t row_start = y * self->stride;
-    uint32_t bytes_per_value = self->bits_per_value / 8;
-    if (bytes_per_value < 1) {
-        uint32_t bit_position = (sizeof(uint32_t) * 8 - ((x & self->x_mask) + 1) * self->bits_per_value);
-        uint32_t index = row_start + (x >> self->x_shift);
-        uint32_t word = self->data[index];
-        word &= ~(self->bitmask << bit_position);
-        word |= (value & self->bitmask) << bit_position;
-        self->data[index] = word;
-    } else {
-        uint32_t *row = self->data + row_start;
-        if (bytes_per_value == 1) {
-            ((uint8_t *)row)[x] = value;
-        } else if (bytes_per_value == 2) {
-            ((uint16_t *)row)[x] = value;
-        } else if (bytes_per_value == 4) {
-            ((uint32_t *)row)[x] = value;
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
+    check_for_deinit(self);
+
+    if (mp_obj_is_type(index_obj, &mp_type_slice))
+    {
+        // TODO(tannewt): Implement subscr after slices support start, stop and step tuples.
+        mp_raise_NotImplementedError(translate("Slices not supported"));
+        return mp_const_none;
+    }
+
+    uint16_t x = 0;
+    uint16_t y = 0;
+    if (mp_obj_is_small_int(index_obj))
+    {
+        mp_int_t i = MP_OBJ_SMALL_INT_VALUE(index_obj);
+        int total_length = self->width * self->height;
+        if (i < 0 || i >= total_length)
+        {
+            mp_raise_IndexError_varg(translate("%q must be %d-%d"), MP_QSTR_index, 0, total_length - 1);
         }
+
+        x = i % self->width;
+        y = i / self->width;
     }
-}
-
-void common_hal_displayio_bitmap_blit(displayio_bitmap_t *self, int16_t x, int16_t y, displayio_bitmap_t *source,
-    int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint32_t skip_index, bool skip_index_none) {
-    if (self->read_only) {
-        mp_raise_RuntimeError(translate("Read-only"));
-    }
-    // Copy region of "source" bitmap into "self" bitmap at location x,y in the "self"
-    // If skip_value is encountered in the source bitmap, it will not be copied.
-    // If skip_value is `None`, then all pixels are copied.
-    // This function assumes input checks were performed for pixel index entries.
-
-    // Update the dirty area
-    int16_t dirty_x_max = (x + (x2 - x1));
-    if (dirty_x_max > self->width) {
-        dirty_x_max = self->width;
-    }
-    int16_t dirty_y_max = y + (y2 - y1);
-    if (dirty_y_max > self->height) {
-        dirty_y_max = self->height;
-    }
-
-    displayio_area_t a = { x, y, dirty_x_max, dirty_y_max, NULL};
-    displayio_bitmap_set_dirty_area(self, &a);
-
-    bool x_reverse = false;
-    bool y_reverse = false;
-
-    // Add reverse direction option to protect blitting of self bitmap back into self bitmap
-    if (x > x1) {
-        x_reverse = true;
-    }
-    if (y > y1) {
-        y_reverse = true;
-    }
-
-    // simplest version - use internal functions for get/set pixels
-    for (int16_t i = 0; i < (x2 - x1); i++) {
-
-        const int xs_index = x_reverse ? ((x2) - i - 1) : x1 + i; // x-index into the source bitmap
-        const int xd_index = x_reverse ? ((x + (x2 - x1)) - i - 1) : x + i; // x-index into the destination bitmap
-
-        if ((xd_index >= 0) && (xd_index < self->width)) {
-            for (int16_t j = 0; j < (y2 - y1); j++) {
-
-                const int ys_index = y_reverse ? ((y2) - j - 1) : y1 + j;  // y-index into the source bitmap
-                const int yd_index = y_reverse ? ((y + (y2 - y1)) - j - 1) : y + j; // y-index into the destination bitmap
-
-                if ((yd_index >= 0) && (yd_index < self->height)) {
-                    uint32_t value = common_hal_displayio_bitmap_get_pixel(source, xs_index, ys_index);
-                    if ((skip_index_none) || (value != skip_index)) {   // write if skip_value_none is True
-                        displayio_bitmap_write_pixel(self, xd_index, yd_index, value);
-                    }
-                }
-            }
+    else
+    {
+        mp_obj_t *items;
+        mp_obj_get_array_fixed_n(index_obj, 2, &items);
+        mp_int_t x_in = mp_obj_get_int(items[0]);
+        if (x_in < 0 || x_in >= self->width)
+        {
+            mp_raise_IndexError_varg(translate("%q must be %d-%d"), MP_QSTR_x, 0, self->width - 1);
         }
+        mp_int_t y_in = mp_obj_get_int(items[1]);
+        if (y_in < 0 || y_in >= self->height)
+        {
+            mp_raise_IndexError_varg(translate("%q must be %d-%d"), MP_QSTR_y, 0, self->height - 1);
+        }
+        x = x_in;
+        y = y_in;
     }
+
+    if (value_obj == MP_OBJ_SENTINEL)
+    {
+        // load
+        return MP_OBJ_NEW_SMALL_INT(common_hal_displayio_bitmap_get_pixel(self, x, y));
+    }
+    else
+    {
+        mp_uint_t value = (mp_uint_t)mp_arg_validate_int_range(
+            mp_obj_get_int(value_obj), 0,
+            (UINT32_MAX >> (32 - common_hal_displayio_bitmap_get_bits_per_value(self))), MP_QSTR_value);
+        common_hal_displayio_bitmap_set_pixel(self, x, y, value);
+    }
+    return mp_const_none;
 }
 
-void common_hal_displayio_bitmap_set_pixel(displayio_bitmap_t *self, int16_t x, int16_t y, uint32_t value) {
-    if (self->read_only) {
-        mp_raise_RuntimeError(translate("Read-only"));
+//|     def blit(
+//|         self,
+//|         x: int,
+//|         y: int,
+//|         source_bitmap: Bitmap,
+//|         *,
+//|         x1: int,
+//|         y1: int,
+//|         x2: int,
+//|         y2: int,
+//|         skip_index: int
+//|     ) -> None:
+//|         """Inserts the source_bitmap region defined by rectangular boundaries
+//|                     (x1,y1) and (x2,y2) into the bitmap at the specified (x,y) location.
+//|
+//|         :param int x: Horizontal pixel location in bitmap where source_bitmap upper-left
+//|                       corner will be placed
+//|         :param int y: Vertical pixel location in bitmap where source_bitmap upper-left
+//|                       corner will be placed
+//|         :param bitmap source_bitmap: Source bitmap that contains the graphical region to be copied
+//|         :param int x1: Minimum x-value for rectangular bounding box to be copied from the source bitmap
+//|         :param int y1: Minimum y-value for rectangular bounding box to be copied from the source bitmap
+//|         :param int x2: Maximum x-value (exclusive) for rectangular bounding box to be copied from the source bitmap
+//|         :param int y2: Maximum y-value (exclusive) for rectangular bounding box to be copied from the source bitmap
+//|         :param int skip_index: bitmap palette index in the source that will not be copied,
+//|                                set to None to copy all pixels"""
+//|         ...
+STATIC mp_obj_t displayio_bitmap_obj_blit(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    enum
+    {
+        ARG_x,
+        ARG_y,
+        ARG_source,
+        ARG_x1,
+        ARG_y1,
+        ARG_x2,
+        ARG_y2,
+        ARG_skip_index
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_x, MP_ARG_REQUIRED | MP_ARG_INT, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_y, MP_ARG_REQUIRED | MP_ARG_INT, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_source_bitmap, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_x1, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0}},
+        {MP_QSTR_y1, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0}},
+        {MP_QSTR_x2, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none}}, // None convert to source->width
+        {MP_QSTR_y2, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none}}, // None convert to source->height
+        {MP_QSTR_skip_index, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    check_for_deinit(self);
+
+    // Check x,y are within self (target) bitmap boundary
+    int16_t x = mp_arg_validate_int_range(args[ARG_x].u_int, 0, MAX(0, self->width - 1), MP_QSTR_x);
+    int16_t y = mp_arg_validate_int_range(args[ARG_y].u_int, 0, MAX(0, self->height - 1), MP_QSTR_y);
+
+    displayio_bitmap_t *source = mp_arg_validate_type(args[ARG_source].u_obj, &displayio_bitmap_type, MP_QSTR_source_bitmap);
+
+    // ensure that the target bitmap (self) has at least as many `bits_per_value` as the source
+    if (self->bits_per_value < source->bits_per_value)
+    {
+        mp_raise_ValueError(translate("source palette too large"));
     }
-    // update the dirty region
-    displayio_area_t a = {x, y, x + 1, y + 1, NULL};
-    displayio_bitmap_set_dirty_area(self, &a);
 
-    // write the pixel
-    displayio_bitmap_write_pixel(self, x, y, value);
+    // Check x1,y1,x2,y2 are within source bitmap boundary
+    int16_t x1 = mp_arg_validate_int_range(args[ARG_x1].u_int, 0, MAX(0, source->width - 1), MP_QSTR_x1);
+    int16_t y1 = mp_arg_validate_int_range(args[ARG_y1].u_int, 0, MAX(0, source->height - 1), MP_QSTR_y1);
+    int16_t x2, y2;
+    // if x2 or y2 is None, then set as the maximum size of the source bitmap
+    if (args[ARG_x2].u_obj == mp_const_none)
+    {
+        x2 = source->width;
+    }
+    else
+    {
+        x2 = mp_arg_validate_int_range(mp_obj_get_int(args[ARG_x2].u_obj), 0, source->width, MP_QSTR_x2);
+    }
+    // int16_t y2;
+    if (args[ARG_y2].u_obj == mp_const_none)
+    {
+        y2 = source->height;
+    }
+    else
+    {
+        y2 = mp_arg_validate_int_range(mp_obj_get_int(args[ARG_y2].u_obj), 0, source->height, MP_QSTR_y2);
+    }
 
+    // Ensure x1 < x2 and y1 < y2
+    if (x1 > x2)
+    {
+        int16_t temp = x2;
+        x2 = x1;
+        x1 = temp;
+    }
+    if (y1 > y2)
+    {
+        int16_t temp = y2;
+        y2 = y1;
+        y1 = temp;
+    }
+
+    uint32_t skip_index;
+    bool skip_index_none; // flag whether skip_value was None
+
+    if (args[ARG_skip_index].u_obj == mp_const_none)
+    {
+        skip_index = 0;
+        skip_index_none = true;
+    }
+    else
+    {
+        skip_index = mp_obj_get_int(args[ARG_skip_index].u_obj);
+        skip_index_none = false;
+    }
+
+    common_hal_displayio_bitmap_blit(self, x, y, source, x1, y1, x2, y2, skip_index, skip_index_none);
+
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(displayio_bitmap_blit_obj, 1, displayio_bitmap_obj_blit);
+
+//|     def fill(self, value: int) -> None:
+//|         """Fills the bitmap with the supplied palette index value."""
+//|         ...
+STATIC mp_obj_t displayio_bitmap_obj_fill(mp_obj_t self_in, mp_obj_t value_obj)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
+    check_for_deinit(self);
+
+    mp_uint_t value = (mp_uint_t)mp_arg_validate_int_range(mp_obj_get_int(value_obj), 0, (1u << common_hal_displayio_bitmap_get_bits_per_value(self)) - 1, MP_QSTR_value);
+    common_hal_displayio_bitmap_fill(self, value);
+
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(displayio_bitmap_fill_obj, displayio_bitmap_obj_fill);
+
+//|     def dirty(self, x1: int = 0, y1: int = 0, x2: int = -1, y2: int = -1) -> None:
+//|         """Inform displayio of bitmap updates done via the buffer
+//|         protocol.
+//|
+//|         :param int x1: Minimum x-value for rectangular bounding box to be considered as modified
+//|         :param int y1: Minimum y-value for rectangular bounding box to be considered as modified
+//|         :param int x2: Maximum x-value (exclusive) for rectangular bounding box to be considered as modified
+//|         :param int y2: Maximum y-value (exclusive) for rectangular bounding box to be considered as modified
+//|
+//|         If x1 or y1 are not specified, they are taken as 0.  If x2 or y2
+//|         are not specified, or are given as -1, they are taken as the width
+//|         and height of the image.  Thus, calling dirty() with the
+//|         default arguments treats the whole bitmap as modified.
+//|
+//|         When a bitmap is modified through the buffer protocol, the
+//|         display will not be properly updated unless the bitmap is
+//|         notified of the "dirty rectangle" that encloses all modified
+//|         pixels."""
+//|         ...
+STATIC mp_obj_t displayio_bitmap_obj_dirty(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    check_for_deinit(self);
+
+    enum
+    {
+        ARG_x1,
+        ARG_y1,
+        ARG_x2,
+        ARG_y2
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_x1, MP_ARG_INT, {.u_int = 0}},
+        {MP_QSTR_y1, MP_ARG_INT, {.u_int = 0}},
+        {MP_QSTR_x2, MP_ARG_INT, {.u_int = -1}},
+        {MP_QSTR_y2, MP_ARG_INT, {.u_int = -1}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    displayio_area_t dirty_area = {
+        .x1 = args[ARG_x1].u_int,
+        .y1 = args[ARG_y1].u_int,
+        .x2 = args[ARG_x2].u_int == -1 ? self->width : args[ARG_x2].u_int,
+        .y2 = args[ARG_y2].u_int == -1 ? self->height : args[ARG_y2].u_int,
+    };
+
+    displayio_bitmap_set_dirty_area(self, &dirty_area);
+
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(displayio_bitmap_dirty_obj, 0, displayio_bitmap_obj_dirty);
+
+//|     def deinit(self) -> None:
+//|         """Release resources allocated by Bitmap."""
+//|         ...
+//|
+STATIC mp_obj_t displayio_bitmap_obj_deinit(mp_obj_t self_in)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
+    common_hal_displayio_bitmap_deinit(self);
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_bitmap_deinit_obj, displayio_bitmap_obj_deinit);
+
+STATIC const mp_rom_map_elem_t displayio_bitmap_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_height), MP_ROM_PTR(&displayio_bitmap_height_obj)},
+    {MP_ROM_QSTR(MP_QSTR_width), MP_ROM_PTR(&displayio_bitmap_width_obj)},
+    {MP_ROM_QSTR(MP_QSTR_blit), MP_ROM_PTR(&displayio_bitmap_blit_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fill), MP_ROM_PTR(&displayio_bitmap_fill_obj)},
+    {MP_ROM_QSTR(MP_QSTR_dirty), MP_ROM_PTR(&displayio_bitmap_dirty_obj)},
+    {MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&displayio_bitmap_deinit_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_bitmap_locals_dict, displayio_bitmap_locals_dict_table);
+
+// (the get_buffer protocol returns 0 for success, 1 for failure)
+STATIC mp_int_t bitmap_get_buffer(mp_obj_t self_in, mp_buffer_info_t *bufinfo, mp_uint_t flags)
+{
+    displayio_bitmap_t *self = MP_OBJ_TO_PTR(self_in);
+    return common_hal_displayio_bitmap_get_buffer(self, bufinfo, flags);
 }
 
-displayio_area_t *displayio_bitmap_get_refresh_areas(displayio_bitmap_t *self, displayio_area_t *tail) {
-    if (self->dirty_area.x1 == self->dirty_area.x2 || self->read_only) {
-        return tail;
-    }
-    self->dirty_area.next = tail;
-    return &self->dirty_area;
-}
-
-void displayio_bitmap_finish_refresh(displayio_bitmap_t *self) {
-    if (self->read_only) {
-        return;
-    }
-    self->dirty_area.x1 = 0;
-    self->dirty_area.x2 = 0;
-}
-
-void common_hal_displayio_bitmap_fill(displayio_bitmap_t *self, uint32_t value) {
-    if (self->read_only) {
-        mp_raise_RuntimeError(translate("Read-only"));
-    }
-    displayio_area_t a = {0, 0, self->width, self->height, NULL};
-    displayio_bitmap_set_dirty_area(self, &a);
-
-    // build the packed word
-    uint32_t word = 0;
-    for (uint8_t i = 0; i < 32 / self->bits_per_value; i++) {
-        word |= (value & self->bitmask) << (32 - ((i + 1) * self->bits_per_value));
-    }
-    // copy it in
-    for (uint32_t i = 0; i < self->stride * self->height; i++) {
-        self->data[i] = word;
-    }
-}
-
-int common_hal_displayio_bitmap_get_buffer(displayio_bitmap_t *self, mp_buffer_info_t *bufinfo, mp_uint_t flags) {
-    if ((flags & MP_BUFFER_WRITE) && self->read_only) {
-        return 1;
-    }
-    bufinfo->len = self->stride * self->height * sizeof(uint32_t);
-    bufinfo->buf = self->data;
-    switch (self->bits_per_value) {
-        case 32:
-            bufinfo->typecode = 'I';
-            break;
-        case 16:
-            bufinfo->typecode = 'H';
-            break;
-        default:
-            bufinfo->typecode = 'B';
-            break;
-    }
-    return 0;
-}
+const mp_obj_type_t displayio_bitmap_type = {
+    {&mp_type_type},
+    .flags = MP_TYPE_FLAG_EXTENDED,
+    .name = MP_QSTR_Bitmap,
+    .make_new = displayio_bitmap_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_bitmap_locals_dict,
+    MP_TYPE_EXTENDED_FIELDS(
+            .subscr = bitmap_subscr,
+            .buffer_p = {.get_buffer = bitmap_get_buffer}, ),
+};

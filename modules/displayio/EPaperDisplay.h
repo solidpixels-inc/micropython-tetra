@@ -1,5 +1,5 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,47 +24,48 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_EPAPERDISPLAY_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_EPAPERDISPLAY_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_EPAPERDISPLAY_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_EPAPERDISPLAY_H
 
-#include "shared-bindings/digitalio/DigitalInOut.h"
-#include "shared-bindings/displayio/Group.h"
+#include "modules/common-hal/microcontroller/Pin.h"
 
-#include "shared-module/displayio/area.h"
-#include "shared-module/displayio/display_core.h"
+#include "modules/displayio/displayio-shared-module/EPaperDisplay.h"
+#include "modules/displayio/displayio-shared-module/Group.h"
 
-typedef struct {
-    mp_obj_base_t base;
-    displayio_display_core_t core;
-    digitalio_digitalinout_obj_t busy;
-    uint32_t milliseconds_per_frame;
-    const uint8_t *start_sequence;
-    const uint8_t *stop_sequence;
-    const uint8_t *refresh_sequence;
-    uint16_t start_sequence_len;
-    uint16_t stop_sequence_len;
-    uint16_t refresh_sequence_len;
-    uint16_t start_up_time_ms;
-    uint16_t refresh_time;
-    uint16_t write_black_ram_command;
-    uint16_t write_color_ram_command;
-    uint8_t hue;
-    bool busy_state;
-    bool black_bits_inverted;
-    bool color_bits_inverted;
-    bool refreshing;
-    bool grayscale;
-    bool acep;
-    bool two_byte_sequence_length;
-    display_chip_select_behavior_t chip_select;
-} displayio_epaperdisplay_obj_t;
+extern const mp_obj_type_t displayio_epaperdisplay_type;
 
-void displayio_epaperdisplay_change_refresh_mode_parameters(displayio_epaperdisplay_obj_t *self,
-    mp_buffer_info_t *start_sequence, float seconds_per_frame);
-void displayio_epaperdisplay_background(displayio_epaperdisplay_obj_t *self);
-void release_epaperdisplay(displayio_epaperdisplay_obj_t *self);
-size_t maybe_refresh_epaperdisplay(void);
+#define NO_COMMAND 0x100
 
-void displayio_epaperdisplay_collect_ptrs(displayio_epaperdisplay_obj_t *self);
+void common_hal_displayio_epaperdisplay_construct(displayio_epaperdisplay_obj_t *self,
+                                                  mp_obj_t bus, const uint8_t *start_sequence, uint16_t start_sequence_len, mp_float_t start_up_time,
+                                                  const uint8_t *stop_sequence, uint16_t stop_sequence_len,
+                                                  uint16_t width, uint16_t height, uint16_t ram_width, uint16_t ram_height,
+                                                  int16_t colstart, int16_t rowstart, uint16_t rotation,
+                                                  uint16_t set_column_window_command, uint16_t set_row_window_command,
+                                                  uint16_t set_current_column_command, uint16_t set_current_row_command,
+                                                  uint16_t write_black_ram_command, bool black_bits_inverted,
+                                                  uint16_t write_color_ram_command, bool color_bits_inverted, uint32_t highlight_color,
+                                                  const uint8_t *refresh_sequence, uint16_t refresh_sequence_len, mp_float_t refresh_time,
+                                                  const mcu_pin_obj_t *busy_pin, bool busy_state, mp_float_t seconds_per_frame,
+                                                  bool always_toggle_chip_select, bool grayscale, bool acep, bool two_byte_sequence_length,
+                                                  bool address_little_endian);
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_EPAPERDISPLAY_H
+bool common_hal_displayio_epaperdisplay_refresh(displayio_epaperdisplay_obj_t *self);
+
+bool common_hal_displayio_epaperdisplay_show(displayio_epaperdisplay_obj_t *self, displayio_group_t *root_group);
+
+mp_obj_t common_hal_displayio_epaperdisplay_get_root_group(displayio_epaperdisplay_obj_t *self);
+bool common_hal_displayio_epaperdisplay_set_root_group(displayio_epaperdisplay_obj_t *self, displayio_group_t *root_group);
+
+// Returns time in milliseconds.
+uint32_t common_hal_displayio_epaperdisplay_get_time_to_refresh(displayio_epaperdisplay_obj_t *self);
+bool common_hal_displayio_epaperdisplay_get_busy(displayio_epaperdisplay_obj_t *self);
+
+uint16_t common_hal_displayio_epaperdisplay_get_width(displayio_epaperdisplay_obj_t *self);
+uint16_t common_hal_displayio_epaperdisplay_get_height(displayio_epaperdisplay_obj_t *self);
+uint16_t common_hal_displayio_epaperdisplay_get_rotation(displayio_epaperdisplay_obj_t *self);
+void common_hal_displayio_epaperdisplay_set_rotation(displayio_epaperdisplay_obj_t *self, int rotation);
+
+mp_obj_t common_hal_displayio_epaperdisplay_get_bus(displayio_epaperdisplay_obj_t *self);
+
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_EPAPERDISPLAY_H

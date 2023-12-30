@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "../micropython",
+                "../micropython/ports/esp32",
+                "../micropython/ports/esp32/boards/ESP32_GENERIC_S3",
+                "/Users/cesar/Dropbox/development/Solidpixels/Code/micropython-tetra",
+                "esp-idf/components/esp_hw_support/include",
+                "esp-idf/components/esp_system/include",
+                "esp-idf/components/esp_common/include",
+                "esp-idf/components/freertos/FreeRTOS-Kernel/include",
+                "esp-idf/components/freertos/config/include/freertos",
+                "esp-idf/components/freertos/config/riscv/include",
+                "esp-idf/components/newlib/platform_include",
+                "esp-idf/components/esp_driver_spi/include",
+                "esp-idf/components/freertos/FreeRTOS-Kernel-SMP/portable/xtensa/include/freertos",
+                "esp-idf/components/soc/esp32/include",
+                "esp-idf/components/hal/include",
+                "esp-idf/components/esp_driver_gpio/include",
+                "esp-idf/components/riscv/include",
+                "esp-idf/components/soc/esp32s3/include",
+                "esp-idf/components/esp_rom/include",
+                "esp-idf/components/xtensa/include",
+                "esp-idf/components/xtensa/esp32/include"
+            ],
+            "defines": [],
+            "macFrameworkPath": [
+                "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+            ],
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-arm64"
+        }
+    ],
+    "version": 4
+}

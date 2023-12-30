@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,86 +24,45 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO___INIT___H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO___INIT___H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO___INIT___H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO___INIT___H
 
-#include "shared-bindings/displayio/Display.h"
-#include "shared-bindings/displayio/EPaperDisplay.h"
-#if CIRCUITPY_FRAMEBUFFERIO
-#include "shared-bindings/framebufferio/FramebufferDisplay.h"
-#endif
-#include "shared-bindings/displayio/FourWire.h"
-#include "shared-bindings/displayio/Group.h"
-#include "shared-bindings/displayio/I2CDisplay.h"
-#if CIRCUITPY_PARALLELDISPLAY
-#include "shared-bindings/paralleldisplay/ParallelBus.h"
-#endif
-#if CIRCUITPY_RGBMATRIX
-#include "shared-bindings/rgbmatrix/RGBMatrix.h"
-#endif
-#if CIRCUITPY_IS31FL3741
-#include "shared-bindings/is31fl3741/FrameBuffer.h"
-#endif
-#if CIRCUITPY_SHARPDISPLAY
-#include "shared-module/sharpdisplay/SharpMemoryFramebuffer.h"
-#endif
-// Port unique frame buffers.
-#if CIRCUITPY_VIDEOCORE
-#include "bindings/videocore/Framebuffer.h"
-#endif
-#if CIRCUITPY_PICODVI
-#include "bindings/picodvi/Framebuffer.h"
-#endif
+#include "py/enum.h"
+#include "py/obj.h"
 
-typedef struct {
-    union {
-        mp_obj_base_t bus_base;
-        displayio_fourwire_obj_t fourwire_bus;
-        displayio_i2cdisplay_obj_t i2cdisplay_bus;
-        #if CIRCUITPY_PARALLELDISPLAY
-        paralleldisplay_parallelbus_obj_t parallel_bus;
-        #endif
-        #if CIRCUITPY_RGBMATRIX
-        rgbmatrix_rgbmatrix_obj_t rgbmatrix;
-        #endif
-        #if CIRCUITPY_IS31FL3741
-        is31fl3741_FrameBuffer_obj_t is31fl3741;
-        #endif
-        #if CIRCUITPY_SHARPDISPLAY
-        sharpdisplay_framebuffer_obj_t sharpdisplay;
-        #endif
-        #if CIRCUITPY_VIDEOCORE
-        videocore_framebuffer_obj_t videocore;
-        #endif
-        #if CIRCUITPY_PICODVI
-        picodvi_framebuffer_obj_t picodvi;
-        #endif
-    };
-} primary_display_bus_t;
+typedef enum {
+    DISPLAY_COMMAND,
+    DISPLAY_DATA
+} display_byte_type_t;
 
-typedef struct {
-    union {
-        mp_obj_base_t display_base;
-        displayio_display_obj_t display;
-        displayio_epaperdisplay_obj_t epaper_display;
-        #if CIRCUITPY_FRAMEBUFFERIO
-        framebufferio_framebufferdisplay_obj_t framebuffer_display;
-        #endif
-    };
-} primary_display_t;
+typedef enum {
+    CHIP_SELECT_UNTOUCHED,
+    CHIP_SELECT_TOGGLE_EVERY_BYTE
+} display_chip_select_behavior_t;
 
-extern primary_display_bus_t display_buses[CIRCUITPY_DISPLAY_LIMIT];
-extern primary_display_t displays[CIRCUITPY_DISPLAY_LIMIT];
+typedef enum displayio_colorspace {
+    DISPLAYIO_COLORSPACE_RGB888,
+    DISPLAYIO_COLORSPACE_RGB565,
+    DISPLAYIO_COLORSPACE_RGB555,
+    DISPLAYIO_COLORSPACE_RGB565_SWAPPED,
+    DISPLAYIO_COLORSPACE_RGB555_SWAPPED,
+    DISPLAYIO_COLORSPACE_BGR565,
+    DISPLAYIO_COLORSPACE_BGR555,
+    DISPLAYIO_COLORSPACE_BGR565_SWAPPED,
+    DISPLAYIO_COLORSPACE_BGR555_SWAPPED,
+    DISPLAYIO_COLORSPACE_L8,
+} displayio_colorspace_t;
 
-extern displayio_group_t circuitpython_splash;
+typedef bool (*display_bus_bus_reset)(mp_obj_t bus);
+typedef bool (*display_bus_bus_free)(mp_obj_t bus);
+typedef bool (*display_bus_begin_transaction)(mp_obj_t bus);
+typedef void (*display_bus_send)(mp_obj_t bus, display_byte_type_t byte_type,
+    display_chip_select_behavior_t chip_select, const uint8_t *data, uint32_t data_length);
+typedef void (*display_bus_end_transaction)(mp_obj_t bus);
 
-void displayio_background(void);
-void reset_displays(void);
-void displayio_gc_collect(void);
+void common_hal_displayio_release_displays(void);
 
-primary_display_t *allocate_display(void);
-primary_display_t *allocate_display_or_raise(void);
-primary_display_bus_t *allocate_display_bus(void);
-primary_display_bus_t *allocate_display_bus_or_raise(void);
+extern const mp_obj_type_t displayio_colorspace_type;
+extern const cp_enum_obj_t displayio_colorspace_RGB888_obj;
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO___INIT___H
+#endif  // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO___INIT___H

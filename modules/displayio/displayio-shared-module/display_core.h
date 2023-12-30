@@ -27,14 +27,15 @@
 #ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_DISPLAY_CORE_H
 #define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_DISPLAY_CORE_H
 
-#include "shared-bindings/displayio/__init__.h"
-#include "shared-bindings/displayio/Group.h"
+#include "modules/displayio/__init__.h"
+#include "modules/displayio/Group.h"
 
-#include "shared-module/displayio/area.h"
+#include "modules/displayio/displayio-shared-module/area.h"
 
 #define NO_COMMAND 0x100
 
-typedef struct {
+typedef struct
+{
     mp_obj_t bus;
     displayio_group_t *current_group;
     uint64_t last_refresh;
@@ -69,10 +70,10 @@ typedef struct {
 } displayio_display_core_t;
 
 void displayio_display_core_construct(displayio_display_core_t *self,
-    mp_obj_t bus, uint16_t width, uint16_t height, uint16_t ram_width, uint16_t ram_height, int16_t colstart, int16_t rowstart, uint16_t rotation,
-    uint16_t color_depth, bool grayscale, bool pixels_in_byte_share_row, uint8_t bytes_per_cell, bool reverse_pixels_in_byte, bool reverse_bytes_in_word,
-    uint16_t column_command, uint16_t row_command, uint16_t set_current_column_command, uint16_t set_current_row_command,
-    bool data_as_commands, bool always_toggle_chip_select, bool SH1107_addressing, bool address_little_endian);
+                                      mp_obj_t bus, uint16_t width, uint16_t height, uint16_t ram_width, uint16_t ram_height, int16_t colstart, int16_t rowstart, uint16_t rotation,
+                                      uint16_t color_depth, bool grayscale, bool pixels_in_byte_share_row, uint8_t bytes_per_cell, bool reverse_pixels_in_byte, bool reverse_bytes_in_word,
+                                      uint16_t column_command, uint16_t row_command, uint16_t set_current_column_command, uint16_t set_current_row_command,
+                                      bool data_as_commands, bool always_toggle_chip_select, bool SH1107_addressing, bool address_little_endian);
 
 bool displayio_display_core_set_root_group(displayio_display_core_t *self, displayio_group_t *root_group);
 

@@ -24,123 +24,87 @@
  * THE SOFTWARE.
  */
 
-#include "shared-bindings/displayio/Shape.h"
+#include "modules/displayio/Shape.h"
 
-#include <string.h>
+#include <stdint.h>
 
+#include "py/binary.h"
+#include "py/objproperty.h"
 #include "py/runtime.h"
-#include "py/misc.h"
+#include "modules/util.h"
+#include "supervisor/shared/translate/translate.h"
 
-void common_hal_displayio_shape_construct(displayio_shape_t *self, uint32_t width,
-    uint32_t height, bool mirror_x, bool mirror_y) {
-    self->mirror_x = mirror_x;
-    self->mirror_y = mirror_y;
-    self->width = width;
-    if (self->mirror_x) {
-        width /= 2;
-        width += self->width % 2;
-    }
-    self->half_width = width;
+//| class Shape:
+//|     """Represents a shape made by defining boundaries that may be mirrored."""
+//|
+//|     def __init__(
+//|         self, width: int, height: int, *, mirror_x: bool = False, mirror_y: bool = False
+//|     ) -> None:
+//|         """Create a Shape object with the given fixed size. Each pixel is one bit and is stored by the
+//|         column boundaries of the shape on each row. Each row's boundary defaults to the full row.
+//|
+//|         :param int width: The number of pixels wide
+//|         :param int height: The number of pixels high
+//|         :param bool mirror_x: When true the left boundary is mirrored to the right.
+//|         :param bool mirror_y: When true the top boundary is mirrored to the bottom."""
+//|         ...
+STATIC mp_obj_t displayio_shape_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args)
+{
+    enum
+    {
+        ARG_width,
+        ARG_height,
+        ARG_mirror_x,
+        ARG_mirror_y
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_width, MP_ARG_REQUIRED | MP_ARG_INT},
+        {MP_QSTR_height, MP_ARG_REQUIRED | MP_ARG_INT},
+        {MP_QSTR_mirror_x, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+        {MP_QSTR_mirror_y, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, all_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    self->height = height;
-    if (self->mirror_y) {
-        height /= 2;
-        height += self->height % 2;
-    }
-    self->half_height = height;
+    mp_int_t width = mp_arg_validate_int_min(args[ARG_width].u_int, 1, MP_QSTR_width);
+    mp_int_t height = mp_arg_validate_int_min(args[ARG_height].u_int, 1, MP_QSTR_height);
 
-    self->data = m_malloc(height * sizeof(uint32_t), false);
+    displayio_shape_t *self = m_new_obj(displayio_shape_t);
+    self->base.type = &displayio_shape_type;
+    common_hal_displayio_shape_construct(self,
+                                         width,
+                                         height,
+                                         args[ARG_mirror_x].u_bool,
+                                         args[ARG_mirror_y].u_bool);
 
-    for (uint16_t i = 0; i < height; i++) {
-        self->data[2 * i] = 0;
-        self->data[2 * i + 1] = width;
-    }
-
-    self->dirty_area.x1 = 0;
-    self->dirty_area.x2 = width;
-    self->dirty_area.y1 = 0;
-    self->dirty_area.y2 = height;
+    return MP_OBJ_FROM_PTR(self);
 }
 
-void common_hal_displayio_shape_set_boundary(displayio_shape_t *self, uint16_t y, uint16_t start_x, uint16_t end_x) {
-    uint16_t max_y = self->height - 1;
-    if (self->mirror_y) {
-        max_y = self->half_height - 1;
-    }
-    mp_arg_validate_int_range(y, 0, max_y, MP_QSTR_y);
-    uint16_t max_x = self->width - 1;
-    if (self->mirror_x) {
-        max_x = self->half_width - 1;
-    }
-    mp_arg_validate_int_range(start_x, 0, max_x, MP_QSTR_start_x);
-    mp_arg_validate_int_range(end_x, 0, max_x, MP_QSTR_end_x);
+//|     def set_boundary(self, y: int, start_x: int, end_x: int) -> None:
+//|         """Loads pre-packed data into the given row."""
+//|         ...
+//|
+STATIC mp_obj_t displayio_shape_obj_set_boundary(size_t n_args, const mp_obj_t *args)
+{
+    (void)n_args;
+    displayio_shape_t *self = MP_OBJ_TO_PTR(args[0]);
+    mp_int_t y = mp_arg_validate_type_int(args[1], MP_QSTR_y);
+    mp_int_t start_x = mp_arg_validate_type_int(args[2], MP_QSTR_start_x);
+    mp_int_t end_x = mp_arg_validate_type_int(args[3], MP_QSTR_end_x);
+    common_hal_displayio_shape_set_boundary(self, y, start_x, end_x);
 
-    uint16_t lower_x, upper_x, lower_y, upper_y;
-
-    // find x-boundaries for updating based on current data and start_x, end_x, and mirror_x
-    lower_x = MIN(start_x, self->data[2 * y]);
-
-    if (self->mirror_x) {
-        upper_x = self->width - lower_x + 1; // dirty rectangles are treated with max value exclusive
-    } else {
-        upper_x = MAX(end_x, self->data[2 * y + 1]) + 1; // dirty rectangles are treated with max value exclusive
-    }
-
-    // find y-boundaries based on y and mirror_y
-    lower_y = y;
-
-    if (self->mirror_y) {
-        upper_y = self->height - lower_y + 1; // dirty rectangles are treated with max value exclusive
-    } else {
-        upper_y = y + 1; // dirty rectangles are treated with max value exclusive
-    }
-
-    self->data[2 * y] = start_x; // update the data array with the new boundaries
-    self->data[2 * y + 1] = end_x;
-
-    if (self->dirty_area.x1 == self->dirty_area.x2) { // Dirty region is empty
-        self->dirty_area.x1 = lower_x;
-        self->dirty_area.x2 = upper_x;
-        self->dirty_area.y1 = lower_y;
-        self->dirty_area.y2 = upper_y;
-
-    } else { // Dirty region is not empty
-        self->dirty_area.x1 = MIN(lower_x, self->dirty_area.x1);
-        self->dirty_area.x2 = MAX(upper_x, self->dirty_area.x2);
-
-        self->dirty_area.y1 = MIN(lower_y, self->dirty_area.y1);
-        self->dirty_area.y2 = MAX(upper_y, self->dirty_area.y2);
-    }
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(displayio_shape_set_boundary_obj, 4, 4, displayio_shape_obj_set_boundary);
 
-uint32_t common_hal_displayio_shape_get_pixel(void *obj, int16_t x, int16_t y) {
-    displayio_shape_t *self = obj;
-    if (x >= self->width || x < 0 || y >= self->height || y < 0) {
-        return 0;
-    }
-    if (self->mirror_x && x >= self->half_width) {
-        x = self->width - x - 1;
-    }
-    if (self->mirror_y && y >= self->half_height) {
-        y = self->height - y - 1;
-    }
-    uint16_t start_x = self->data[2 * y];
-    uint16_t end_x = self->data[2 * y + 1];
-    if (x < start_x || x > end_x) {
-        return 0;
-    }
-    return 1;
-}
+STATIC const mp_rom_map_elem_t displayio_shape_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_set_boundary), MP_ROM_PTR(&displayio_shape_set_boundary_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_shape_locals_dict, displayio_shape_locals_dict_table);
 
-displayio_area_t *displayio_shape_get_refresh_areas(displayio_shape_t *self, displayio_area_t *tail) {
-    if (self->dirty_area.x1 == self->dirty_area.x2) {
-        return tail;
-    }
-    self->dirty_area.next = tail;
-    return &self->dirty_area;
-}
-
-void displayio_shape_finish_refresh(displayio_shape_t *self) {
-    self->dirty_area.x1 = 0;
-    self->dirty_area.x2 = 0;
-}
+const mp_obj_type_t displayio_shape_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_Shape,
+    .make_new = displayio_shape_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_shape_locals_dict,
+};

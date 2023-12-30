@@ -24,28 +24,18 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_SHAPE_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_SHAPE_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_SHAPE_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_SHAPE_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "modules/displayio/Shape.h"
 
-#include "py/obj.h"
-#include "shared-module/displayio/area.h"
+extern const mp_obj_type_t displayio_shape_type;
 
-typedef struct {
-    mp_obj_base_t base;
-    uint16_t width;
-    uint16_t height;
-    uint16_t half_width;
-    uint16_t half_height;
-    uint16_t *data;
-    bool mirror_x;
-    bool mirror_y;
-    displayio_area_t dirty_area;
-} displayio_shape_t;
+void common_hal_displayio_shape_construct(displayio_shape_t *self, uint32_t width,
+                                          uint32_t height, bool mirror_x, bool mirror_y);
 
-void displayio_shape_finish_refresh(displayio_shape_t *self);
-displayio_area_t *displayio_shape_get_refresh_areas(displayio_shape_t *self, displayio_area_t *tail);
+void common_hal_displayio_shape_set_boundary(displayio_shape_t *self, uint16_t y, uint16_t start_x,
+                                             uint16_t end_x);
+uint32_t common_hal_displayio_shape_get_pixel(void *shape, int16_t x, int16_t y);
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_SHAPE_H
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_SHAPE_H

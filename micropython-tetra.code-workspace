@@ -11,9 +11,6 @@
     },
     {
       "path": "../../../../../Downloads/circuitpython"
-    },
-    {
-      "path": "../../../../../Downloads/micropython"
     }
   ],
   "settings": {
@@ -26,6 +23,22 @@
       "/Users/cesar/.vscode/extensions/joedevivo.vscode-circuitpython-0.1.20-darwin-arm64/stubs",
       "/Users/cesar/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20231228/adafruit-circuitpython-bundle-py-20231228/lib"
     ],
-    "circuitpython.board.version": null
+    "circuitpython.board.version": null,
+    "files.associations": {
+      "colorconverter.h": "c",
+      "fourwire.h": "c",
+      "pin.h": "c",
+      "group.h": "c",
+      "__init__.h": "c",
+      "enum.h": "c",
+      "obj.h": "c",
+      "mpconfig.h": "c",
+      "mpconfigport.h": "c",
+      "display.h": "c",
+      "ondiskbitmap.h": "c",
+      "i2cdisplay.h": "c",
+      "digitalinout.h": "c",
+      "framebufferdisplay.h": "c"
+    }
   }
 }

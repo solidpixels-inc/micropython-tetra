@@ -1,9 +1,9 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2019 Scott Shawcroft for Adafruit Industries
+ * Copyright (c) 2017, 2018 Scott Shawcroft for Adafruit Industries
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,41 +24,49 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_DISPLAY_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_DISPLAY_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_DISPLAY_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_DISPLAY_H
 
-#include "shared-bindings/digitalio/DigitalInOut.h"
-#include "shared-bindings/displayio/Group.h"
-#if CIRCUITPY_PWMIO
-#include "shared-bindings/pwmio/PWMOut.h"
-#endif
+#include "modules/common-hal/microcontroller/Pin.h"
 
-#include "shared-module/displayio/area.h"
-#include "shared-module/displayio/display_core.h"
+#include "modules/displayio/displayio-shared-module/Display.h"
+#include "modules/displayio/displayio-shared-module/Group.h"
 
-typedef struct {
-    mp_obj_base_t base;
-    displayio_display_core_t core;
-    union {
-        digitalio_digitalinout_obj_t backlight_inout;
-        #if CIRCUITPY_PWMIO
-        pwmio_pwmout_obj_t backlight_pwm;
-        #endif
-    };
-    uint64_t last_refresh_call;
-    mp_float_t current_brightness;
-    uint16_t brightness_command;
-    uint16_t native_frames_per_second;
-    uint16_t native_ms_per_frame;
-    uint8_t write_ram_command;
-    bool auto_refresh;
-    bool first_manual_refresh;
-    bool backlight_on_high;
-} displayio_display_obj_t;
+extern const mp_obj_type_t displayio_display_type;
 
-void displayio_display_background(displayio_display_obj_t *self);
-void release_display(displayio_display_obj_t *self);
-void reset_display(displayio_display_obj_t *self);
-void displayio_display_collect_ptrs(displayio_display_obj_t *self);
+#define NO_BRIGHTNESS_COMMAND 0x100
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_DISPLAY_H
+void common_hal_displayio_display_construct(displayio_display_obj_t *self,
+                                            mp_obj_t bus, uint16_t width, uint16_t height,
+                                            int16_t colstart, int16_t rowstart, uint16_t rotation, uint16_t color_depth, bool grayscale,
+                                            bool pixels_in_byte_share_row, uint8_t bytes_per_cell, bool reverse_pixels_in_byte, bool reverse_bytes_in_word,
+                                            uint8_t set_column_command, uint8_t set_row_command, uint8_t write_ram_command,
+                                            uint8_t *init_sequence, uint16_t init_sequence_len, const mcu_pin_obj_t *backlight_pin, uint16_t brightness_command,
+                                            mp_float_t brightness,
+                                            bool single_byte_bounds, bool data_as_commands, bool auto_refresh, uint16_t native_frames_per_second,
+                                            bool backlight_on_high, bool SH1107_addressing, uint16_t backlight_pwm_frequency);
+
+bool common_hal_displayio_display_show(displayio_display_obj_t *self,
+                                       displayio_group_t *root_group);
+
+bool common_hal_displayio_display_refresh(displayio_display_obj_t *self, uint32_t target_ms_per_frame, uint32_t maximum_ms_per_real_frame);
+
+bool common_hal_displayio_display_get_auto_refresh(displayio_display_obj_t *self);
+void common_hal_displayio_display_set_auto_refresh(displayio_display_obj_t *self, bool auto_refresh);
+
+uint16_t common_hal_displayio_display_get_width(displayio_display_obj_t *self);
+uint16_t common_hal_displayio_display_get_height(displayio_display_obj_t *self);
+uint16_t common_hal_displayio_display_get_rotation(displayio_display_obj_t *self);
+void common_hal_displayio_display_set_rotation(displayio_display_obj_t *self, int rotation);
+
+bool common_hal_displayio_display_get_dither(displayio_display_obj_t *self);
+void common_hal_displayio_display_set_dither(displayio_display_obj_t *self, bool dither);
+
+mp_float_t common_hal_displayio_display_get_brightness(displayio_display_obj_t *self);
+bool common_hal_displayio_display_set_brightness(displayio_display_obj_t *self, mp_float_t brightness);
+
+mp_obj_t common_hal_displayio_display_get_bus(displayio_display_obj_t *self);
+mp_obj_t common_hal_displayio_display_get_root_group(displayio_display_obj_t *self);
+mp_obj_t common_hal_displayio_display_set_root_group(displayio_display_obj_t *self, displayio_group_t *root_group);
+
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_DISPLAY_H

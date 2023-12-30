@@ -1,9 +1,9 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2018 Scott Shawcroft for Adafruit Industries
+ * Copyright (c) 2019 Scott Shawcroft for Adafruit Industries
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,100 +29,120 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "py/gc.h"
+#include "shared/runtime/context_manager_helpers.h"
+#include "py/binary.h"
+#include "py/objproperty.h"
 #include "py/runtime.h"
-#include "shared-bindings/busio/I2C.h"
-#include "shared-bindings/digitalio/DigitalInOut.h"
 #include "shared-bindings/microcontroller/Pin.h"
-#include "shared-bindings/microcontroller/__init__.h"
-#include "shared-bindings/time/__init__.h"
-#include "shared-module/displayio/display_core.h"
+#include "modules/busio/I2C.h"
+#include "modules/util.h"
+#include "modules/displayio/displayio-shared-module/__init__.h"
+#include "supervisor/shared/translate/translate.h"
 
-void common_hal_displayio_i2cdisplay_construct(displayio_i2cdisplay_obj_t *self,
-    busio_i2c_obj_t *i2c, uint16_t device_address, const mcu_pin_obj_t *reset) {
+//| class I2CDisplay:
+//|     """Manage updating a display over I2C in the background while Python code runs.
+//|     It doesn't handle display initialization."""
+//|
+//|     def __init__(
+//|         self,
+//|         i2c_bus: busio.I2C,
+//|         *,
+//|         device_address: int,
+//|         reset: Optional[microcontroller.Pin] = None
+//|     ) -> None:
+//|         """Create a I2CDisplay object associated with the given I2C bus and reset pin.
+//|
+//|         The I2C bus and pins are then in use by the display until `displayio.release_displays()` is
+//|         called even after a reload. (It does this so CircuitPython can use the display after your code
+//|         is done.) So, the first time you initialize a display bus in code.py you should call
+//|         :py:func:`displayio.release_displays` first, otherwise it will error after the first code.py run.
+//|
+//|         :param busio.I2C i2c_bus: The I2C bus that make up the clock and data lines
+//|         :param int device_address: The I2C address of the device
+//|         :param microcontroller.Pin reset: Reset pin. When None only software reset can be used
+//|         """
+//|         ...
+STATIC mp_obj_t displayio_i2cdisplay_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args)
+{
+    enum
+    {
+        ARG_i2c_bus,
+        ARG_device_address,
+        ARG_reset
+    };
+    static const mp_arg_t allowed_args[] = {
+        {MP_QSTR_i2c_bus, MP_ARG_REQUIRED | MP_ARG_OBJ},
+        {MP_QSTR_device_address, MP_ARG_INT | MP_ARG_KW_ONLY | MP_ARG_REQUIRED},
+        {MP_QSTR_reset, MP_ARG_OBJ | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all_kw_array(n_args, n_kw, all_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    // Reset the display before probing
-    self->reset.base.type = &mp_type_NoneType;
-    if (reset != NULL) {
-        self->reset.base.type = &digitalio_digitalinout_type;
-        common_hal_digitalio_digitalinout_construct(&self->reset, reset);
-        common_hal_digitalio_digitalinout_switch_to_output(&self->reset, true, DRIVE_MODE_PUSH_PULL);
-        common_hal_never_reset_pin(reset);
-        common_hal_displayio_i2cdisplay_reset(self);
-    }
+    const mcu_pin_obj_t *reset = validate_obj_is_free_pin_or_none(args[ARG_reset].u_obj, MP_QSTR_reset);
 
-    // Probe the bus to see if a device acknowledges the given address.
-    if (!common_hal_busio_i2c_probe(i2c, device_address)) {
-        self->base.type = &mp_type_NoneType;
-        common_hal_displayio_i2cdisplay_deinit(self);
-        mp_raise_ValueError_varg(translate("Unable to find I2C Display at %x"), device_address);
-    }
+    mp_obj_t i2c = mp_arg_validate_type(args[ARG_i2c_bus].u_obj, &busio_i2c_type, MP_QSTR_i2c_bus);
+    displayio_i2cdisplay_obj_t *self = &allocate_display_bus_or_raise()->i2cdisplay_bus;
+    self->base.type = &displayio_i2cdisplay_type;
 
-    // Write to the device and return 0 on success or an appropriate error code from mperrno.h
-    self->bus = i2c;
-    common_hal_busio_i2c_never_reset(self->bus);
-    // Our object is statically allocated off the heap so make sure the bus object lives to the end
-    // of the heap as well.
-    gc_never_free(self->bus);
-
-    self->address = device_address;
+    common_hal_displayio_i2cdisplay_construct(self,
+                                              MP_OBJ_TO_PTR(i2c), args[ARG_device_address].u_int, reset);
+    return self;
 }
 
-void common_hal_displayio_i2cdisplay_deinit(displayio_i2cdisplay_obj_t *self) {
-    if (self->bus == &self->inline_bus) {
-        common_hal_busio_i2c_deinit(self->bus);
+//|     def reset(self) -> None:
+//|         """Performs a hardware reset via the reset pin. Raises an exception if called when no reset pin
+//|         is available."""
+//|         ...
+STATIC mp_obj_t displayio_i2cdisplay_obj_reset(mp_obj_t self_in)
+{
+    displayio_i2cdisplay_obj_t *self = self_in;
+
+    if (!common_hal_displayio_i2cdisplay_reset(self))
+    {
+        mp_raise_RuntimeError(translate("no reset pin available"));
     }
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_1(displayio_i2cdisplay_reset_obj, displayio_i2cdisplay_obj_reset);
 
-    if (self->reset.base.type == &digitalio_digitalinout_type) {
-        common_hal_digitalio_digitalinout_deinit(&self->reset);
+//|     def send(self, command: int, data: ReadableBuffer) -> None:
+//|         """Sends the given command value followed by the full set of data. Display state, such as
+//|         vertical scroll, set via ``send`` may or may not be reset once the code is done."""
+//|         ...
+//|
+STATIC mp_obj_t displayio_i2cdisplay_obj_send(mp_obj_t self, mp_obj_t command_obj, mp_obj_t data_obj)
+{
+    mp_int_t command_int = mp_obj_get_int(command_obj);
+    mp_arg_validate_int_range(command_int, 0, 255, MP_QSTR_command);
+
+    uint8_t command = command_int;
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(data_obj, &bufinfo, MP_BUFFER_READ);
+
+    // Wait for display bus to be available.
+    while (!common_hal_displayio_i2cdisplay_begin_transaction(self))
+    {
+        RUN_BACKGROUND_TASKS;
     }
-}
+    uint8_t full_command[bufinfo.len + 1];
+    full_command[0] = command;
+    memcpy(full_command + 1, ((uint8_t *)bufinfo.buf), bufinfo.len);
+    common_hal_displayio_i2cdisplay_send(self, DISPLAY_COMMAND, CHIP_SELECT_UNTOUCHED, full_command, bufinfo.len + 1);
+    common_hal_displayio_i2cdisplay_end_transaction(self);
 
-bool common_hal_displayio_i2cdisplay_reset(mp_obj_t obj) {
-    displayio_i2cdisplay_obj_t *self = MP_OBJ_TO_PTR(obj);
-    if (self->reset.base.type == &mp_type_NoneType) {
-        return false;
-    }
-
-    common_hal_digitalio_digitalinout_set_value(&self->reset, false);
-    common_hal_mcu_delay_us(4);
-    common_hal_digitalio_digitalinout_set_value(&self->reset, true);
-    return true;
+    return mp_const_none;
 }
+MP_DEFINE_CONST_FUN_OBJ_3(displayio_i2cdisplay_send_obj, displayio_i2cdisplay_obj_send);
 
-bool common_hal_displayio_i2cdisplay_bus_free(mp_obj_t obj) {
-    displayio_i2cdisplay_obj_t *self = MP_OBJ_TO_PTR(obj);
-    if (!common_hal_busio_i2c_try_lock(self->bus)) {
-        return false;
-    }
-    common_hal_busio_i2c_unlock(self->bus);
-    return true;
-}
+STATIC const mp_rom_map_elem_t displayio_i2cdisplay_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_reset), MP_ROM_PTR(&displayio_i2cdisplay_reset_obj)},
+    {MP_ROM_QSTR(MP_QSTR_send), MP_ROM_PTR(&displayio_i2cdisplay_send_obj)},
+};
+STATIC MP_DEFINE_CONST_DICT(displayio_i2cdisplay_locals_dict, displayio_i2cdisplay_locals_dict_table);
 
-bool common_hal_displayio_i2cdisplay_begin_transaction(mp_obj_t obj) {
-    displayio_i2cdisplay_obj_t *self = MP_OBJ_TO_PTR(obj);
-    return common_hal_busio_i2c_try_lock(self->bus);
-}
-
-void common_hal_displayio_i2cdisplay_send(mp_obj_t obj, display_byte_type_t data_type,
-    display_chip_select_behavior_t chip_select, const uint8_t *data, uint32_t data_length) {
-    displayio_i2cdisplay_obj_t *self = MP_OBJ_TO_PTR(obj);
-    if (data_type == DISPLAY_COMMAND) {
-        uint8_t command_bytes[2 * data_length];
-        for (uint32_t i = 0; i < data_length; i++) {
-            command_bytes[2 * i] = 0x80;
-            command_bytes[2 * i + 1] = data[i];
-        }
-        common_hal_busio_i2c_write(self->bus, self->address, command_bytes, 2 * data_length);
-    } else {
-        uint8_t data_bytes[data_length + 1];
-        data_bytes[0] = 0x40;
-        memcpy(data_bytes + 1, data, data_length);
-        common_hal_busio_i2c_write(self->bus, self->address, data_bytes, data_length + 1);
-    }
-}
-
-void common_hal_displayio_i2cdisplay_end_transaction(mp_obj_t obj) {
-    displayio_i2cdisplay_obj_t *self = MP_OBJ_TO_PTR(obj);
-    common_hal_busio_i2c_unlock(self->bus);
-}
+const mp_obj_type_t displayio_i2cdisplay_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_I2CDisplay,
+    .make_new = displayio_i2cdisplay_make_new,
+    .locals_dict = (mp_obj_dict_t *)&displayio_i2cdisplay_locals_dict,
+};

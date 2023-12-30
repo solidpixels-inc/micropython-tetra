@@ -24,33 +24,20 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_ONDISKBITMAP_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_ONDISKBITMAP_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_ONDISKBITMAP_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_ONDISKBITMAP_H
 
-#include <stdbool.h>
-#include <stdint.h>
-
-#include "py/obj.h"
-
+#include "modules/displayio/displayio-shared-module/OnDiskBitmap.h"
 #include "extmod/vfs_fat.h"
 
-typedef struct {
-    mp_obj_base_t base;
-    uint16_t width;
-    uint16_t height;
-    uint16_t data_offset;
-    uint16_t stride;
-    uint32_t r_bitmask;
-    uint32_t g_bitmask;
-    uint32_t b_bitmask;
-    pyb_file_obj_t *file;
-    union {
-        mp_obj_base_t *pixel_shader_base;
-        struct displayio_palette *palette;
-        struct displayio_colorconverter *colorconverter;
-    };
-    bool bitfield_compressed;
-    uint8_t bits_per_pixel;
-} displayio_ondiskbitmap_t;
+extern const mp_obj_type_t displayio_ondiskbitmap_type;
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_ONDISKBITMAP_H
+void common_hal_displayio_ondiskbitmap_construct(displayio_ondiskbitmap_t *self, pyb_file_obj_t *file);
+
+uint32_t common_hal_displayio_ondiskbitmap_get_pixel(displayio_ondiskbitmap_t *bitmap,
+                                                     int16_t x, int16_t y);
+
+uint16_t common_hal_displayio_ondiskbitmap_get_height(displayio_ondiskbitmap_t *self);
+mp_obj_t common_hal_displayio_ondiskbitmap_get_pixel_shader(displayio_ondiskbitmap_t *self);
+uint16_t common_hal_displayio_ondiskbitmap_get_width(displayio_ondiskbitmap_t *self);
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYIO_ONDISKBITMAP_H

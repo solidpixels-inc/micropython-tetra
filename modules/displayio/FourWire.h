@@ -1,9 +1,9 @@
 /*
- * This file is part of the MicroPython project, http://micropython.org/
+ * This file is part of the Micro Python project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2018 Scott Shawcroft for Adafruit Industries
+ * Copyright (c) 2017, 2018 Scott Shawcroft for Adafruit Industries
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,23 +24,33 @@
  * THE SOFTWARE.
  */
 
-#ifndef MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_FOURWIRE_H
-#define MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_FOURWIRE_H
+#ifndef MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYBUSIO_FOURWIRE_H
+#define MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYBUSIO_FOURWIRE_H
 
-#include "common-hal/busio/SPI.h"
-#include "common-hal/digitalio/DigitalInOut.h"
-#include "shared-module/displayio/Group.h"
+#include "modules/displayio/displayio-shared-module/FourWire.h"
 
-typedef struct {
-    mp_obj_base_t base;
-    busio_spi_obj_t *bus;
-    busio_spi_obj_t inline_bus;
-    digitalio_digitalinout_obj_t command;
-    digitalio_digitalinout_obj_t chip_select;
-    digitalio_digitalinout_obj_t reset;
-    uint32_t frequency;
-    uint8_t polarity;
-    uint8_t phase;
-} displayio_fourwire_obj_t;
+#include "__init__.h"
+#include "common-hal/microcontroller/Pin.h"
 
-#endif // MICROPY_INCLUDED_SHARED_MODULE_DISPLAYIO_FOURWIRE_H
+#include "displayio-shared-module/Group.h"
+
+extern const mp_obj_type_t displayio_fourwire_type;
+
+void common_hal_displayio_fourwire_construct(displayio_fourwire_obj_t *self,
+                                             busio_spi_obj_t *spi, const mcu_pin_obj_t *command,
+                                             const mcu_pin_obj_t *chip_select, const mcu_pin_obj_t *reset, uint32_t baudrate,
+                                             uint8_t polarity, uint8_t phase);
+
+void common_hal_displayio_fourwire_deinit(displayio_fourwire_obj_t *self);
+
+bool common_hal_displayio_fourwire_reset(mp_obj_t self);
+bool common_hal_displayio_fourwire_bus_free(mp_obj_t self);
+
+bool common_hal_displayio_fourwire_begin_transaction(mp_obj_t self);
+
+void common_hal_displayio_fourwire_send(mp_obj_t self, display_byte_type_t byte_type,
+                                        display_chip_select_behavior_t chip_select, const uint8_t *data, uint32_t data_length);
+
+void common_hal_displayio_fourwire_end_transaction(mp_obj_t self);
+
+#endif // MICROPY_INCLUDED_SHARED_BINDINGS_DISPLAYBUSIO_FOURWIRE_H
