@@ -11,6 +11,9 @@
     },
     {
       "path": "../../../../../Downloads/circuitpython"
+    },
+    {
+      "path": "../../../../../Downloads/micropython"
     }
   ],
   "settings": {
