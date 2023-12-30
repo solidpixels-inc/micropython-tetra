@@ -6,9 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: 8.2.9
-        BOARD: ${BOARD}
+        VERSION: v1.22.0
         PORT: ${PORT}
+        BOARD: ${BOARD}
+        USER_C_MODULES: ${USER_C_MODULES}
     volumes:
       - ./build:/root/build
       - ./modules:/modules
