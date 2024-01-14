@@ -4,24 +4,28 @@
       "path": "."
     },
     {
-      "path": "../micropython/micropython-esp32-blink"
-    },
-    {
       "path": "../tetra"
     },
     {
       "path": "../../../../../Downloads/circuitpython"
+    },
+    {
+      "path": "../micropython-tests/micropython-esp32-blink"
+    },
+    {
+      "path": "../esp-idf"
     }
   ],
   "settings": {
     "python.languageServer": "Pylance",
     "python.analysis.diagnosticSeverityOverrides": {
-      "reportMissingModuleSource": "none"
+      "reportMissingModuleSource": "none",
+      "reportShadowedImports": "none"
     },
     "python.analysis.extraPaths": [
       "",
-      "/Users/cesar/.vscode/extensions/joedevivo.vscode-circuitpython-0.1.20-darwin-arm64/stubs",
-      "/Users/cesar/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20231228/adafruit-circuitpython-bundle-py-20231228/lib"
+      "/Users/cesar/.vscode/extensions/joedevivo.vscode-circuitpython-0.2.0-darwin-arm64/stubs",
+      "/Users/cesar/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20240109/adafruit-circuitpython-bundle-py-20240109/lib"
     ],
     "circuitpython.board.version": null,
     "files.associations": {
@@ -38,7 +42,8 @@
       "ondiskbitmap.h": "c",
       "i2cdisplay.h": "c",
       "digitalinout.h": "c",
-      "framebufferdisplay.h": "c"
+      "framebufferdisplay.h": "c",
+      "mpstate.h": "c"
     }
   }
 }

@@ -4,9 +4,9 @@
             "name": "Mac",
             "includePath": [
                 "${workspaceFolder}/**",
-                "../micropython",
-                "../micropython/ports/esp32",
-                "../micropython/ports/esp32/boards/ESP32_GENERIC_S3",
+                "micropython",
+                "micropython/ports/esp32",
+                "micropython/ports/esp32/boards/ESP32_GENERIC_S3",
                 "/Users/cesar/Dropbox/development/Solidpixels/Code/micropython-tetra",
                 "esp-idf/components/esp_hw_support/include",
                 "esp-idf/components/esp_system/include",

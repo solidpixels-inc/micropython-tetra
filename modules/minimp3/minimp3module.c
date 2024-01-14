@@ -95,6 +95,6 @@ const mp_obj_module_t mp3_module = {
     .globals = (mp_obj_dict_t *)&mp3_module_globals,
 };
 // Register the module with MicroPython
-MP_REGISTER_MODULE(MP_QSTR_minimp3, minimp3_user_cmodule);
+// MP_REGISTER_MODULE(MP_QSTR_minimp3, minimp3_user_cmodule);
 
 // mp_printf(&mp_plat_print, "MINIMP3_MAX_SAMPLES_PER_FRAME\n");
